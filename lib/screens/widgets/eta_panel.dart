@@ -229,22 +229,36 @@ class EtaPanel extends StatelessWidget {
                                       style: theme.textTheme.bodyMedium
                                           ?.copyWith(fontWeight: FontWeight.w600)),
                                   const SizedBox(height: 4),
-                                  Row(
+                                  // Wrap (bukan Row) - beda platform (khususnya iOS, font
+                                  // sistemnya sendiri) bisa bikin lebar teks "Jarak/ETA" ini
+                                  // beda sepersekian pixel dari Android, dan Row polos tanpa
+                                  // Expanded/Flexible akan overflow (RenderFlex overflowed)
+                                  // begitu totalnya sedikit saja melebihi lebar panel. Wrap
+                                  // otomatis pindah baris kalau tidak muat, jadi aman di
+                                  // platform/ukuran font mana pun tanpa memotong teks.
+                                  Wrap(
+                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    spacing: 8,
+                                    runSpacing: 4,
                                     children: [
                                       Text('Jarak: ${row.distanceKm.toStringAsFixed(2)} km',
                                           style: theme.textTheme.bodySmall),
-                                      const SizedBox(width: 10),
-                                      Container(
-                                        width: 8,
-                                        height: 8,
-                                        decoration: BoxDecoration(
-                                          color: _levelColor(row.level),
-                                          shape: BoxShape.circle,
-                                        ),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 8,
+                                            height: 8,
+                                            decoration: BoxDecoration(
+                                              color: _levelColor(row.level),
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text('ETA: ${row.durationLabel}',
+                                              style: theme.textTheme.bodySmall),
+                                        ],
                                       ),
-                                      const SizedBox(width: 4),
-                                      Text('ETA: ${row.durationLabel}',
-                                          style: theme.textTheme.bodySmall),
                                     ],
                                   ),
                                 ],
@@ -303,10 +317,15 @@ class EtaPanel extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
+      // Label di dalam Expanded (bukan Row spaceBetween polos) - sama
+      // seperti alasan Wrap di baris Jarak/ETA di atas: label+value ini
+      // pas-pasan lebarnya, dan beda metrik font antar platform bisa
+      // bikin Row spaceBetung overflow. Expanded pada label menyerap
+      // sisa/kekurangan lebar duluan sebelum sempat overflow.
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: theme.textTheme.bodySmall),
+          Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+          const SizedBox(width: 8),
           Text(value,
               style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
         ],

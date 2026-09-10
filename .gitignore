@@ -44,6 +44,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Claude Code session-local state (bukan bagian dari project)
+.claude/
+
 # Node (functions/ - Firebase Cloud Function, superseded by backend/ FastAPI,
 # tapi source-nya dibiarkan sebagai riwayat/referensi)
 node_modules/

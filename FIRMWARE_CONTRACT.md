@@ -123,11 +123,11 @@ GET https://gps.jejakpintar.cloud/telemetry/{sn}/history?limit=100  # riwayat
 Header: X-Admin-Key: <ADMIN_API_KEY dari .env backend>
 ```
 
-Kalau app Flutter dipindah dari Firestore SDK ke backend ini, ketiga
-endpoint ini yang menggantikan `DeviceService.watchPrimaryDevice()` dan
-`watchHistory()` — bedanya ini REST biasa (poll/fetch), bukan realtime
-stream seperti Firestore snapshot listener, jadi app perlu polling berkala
-atau pola lain untuk update "live".
+App Flutter sudah dipindah ke endpoint ini (lihat bagian 4) — ketiga
+endpoint ini menggantikan `DeviceService.watchPrimaryDevice()` dan
+`watchHistory()` versi Firestore lama. Bedanya ini REST biasa (poll/fetch),
+bukan realtime stream seperti Firestore snapshot listener, jadi app polling
+tiap 5 detik untuk update "live" alih-alih listener.
 
 ## 3. Setup server (sekali, bukan per-device)
 
@@ -179,15 +179,19 @@ tiap container `api` start.
       `device_password` (+ form-nya di portal) sudah dihapus karena sudah
       tidak dipakai sama sekali. `CONFIG_MAGIC` dinaikkan supaya EEPROM lama
       otomatis reset bersih.
-- [ ] Kalau app Flutter juga dipindah (bukan cuma firmware): ganti
-      `DeviceService` dari Firestore SDK ke `http`/`dio` REST call ke
-      endpoint admin di atas, dan desain ulang "live update" (polling
-      interval, bukan snapshot listener). **Belum jelas scope-nya** — backend
-      ini tidak punya endpoint login/user/waypoints sama sekali, jadi bagian
-      itu perlu keputusan terpisah (tetap Firebase, atau kolaborator nambah
-      endpoint) sebelum dikerjakan.
-- [ ] Firestore & Cloud Function lama (`functions/`) bisa dipensiunkan
-      setelah migrasi ini selesai dan terverifikasi jalan.
+- [x] App Flutter dipindah sepenuhnya (2026-09-10): `DeviceService` sudah
+      ganti dari Firestore SDK ke `http` REST call ke `backend/`, "live
+      update" jadi polling 5 detik (bukan snapshot listener). Backend
+      ditambah endpoint `POST /auth/login`, `GET/PATCH /users/me`,
+      `GET/POST/PATCH/DELETE /users[/{id}]`, dan
+      `GET/POST/DELETE /devices/{sn}/waypoints[/{id}]` — login sekarang JWT
+      dari backend sendiri, bukan Firebase Auth lagi. Diverifikasi live di
+      emulator Android: login, admin panel, create/edit user, dan waypoint
+      add/list/remove semua jalan lewat backend baru.
+- [x] Firestore & Cloud Function lama (`functions/`, `firebase.json`,
+      `firestore.rules`/`indexes.json`, `lib/firebase_options.dart`) sudah
+      dipensiunkan — dihapus dari repo setelah migrasi di atas terverifikasi
+      jalan. Lihat `README.md` untuk arsitektur saat ini.
 
 ## Riwayat kontrak sebelumnya (Firebase, masih aktif di firmware saat ini)
 

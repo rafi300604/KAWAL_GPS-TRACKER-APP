@@ -199,6 +199,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       lat: draft.lat,
       lng: draft.lng,
     );
+    // Langsung buka panel ETA begitu waypoint tersimpan - device_service
+    // sudah mendorong data waypoint terbaru ke stream sebelum Future ini
+    // selesai (lihat _refreshWaypointsNow()), jadi EtaPanel yang baru saja
+    // muncul di sini langsung dapat data yang benar, bukan daftar kosong.
+    if (mounted) setState(() => _showEtaPanel = true);
   }
 
   Future<void> _openTrackingHistoryDialog(DeviceVessel vessel) async {

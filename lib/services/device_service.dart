@@ -99,35 +99,63 @@ class DeviceService {
     }
   }
 
-  // Sama seperti watchAllDevices()/watchDevice() - broadcast stream yang
-  // di-cache per sn, supaya rebuild widget tidak memicu polling loop baru
-  // tiap kali (lihat catatan panjang di atas watchAllDevices()).
-  final Map<String, Stream<List<Waypoint>>> _waypointStreams = {};
+  // StreamController (bukan cuma Stream mentah dari async*) supaya
+  // addWaypoint()/removeWaypoint() bisa DORONG hasil terbaru langsung ke
+  // listener yang sudah ada (lewat _refreshWaypointsNow()) begitu POST/DELETE
+  // sukses - tanpa ini, UI (panel ETA, rute di peta) baru ikut berubah di
+  // tick polling berikutnya (bisa sampai 5 detik), kelihatan lambat/nge-lag
+  // padahal datanya sudah tersimpan di backend. Tetap di-cache per sn (sama
+  // seperti watchAllDevices()/watchDevice()) supaya rebuild widget tidak
+  // memicu polling loop baru tiap kali.
+  final Map<String, StreamController<List<Waypoint>>> _waypointControllers = {};
 
   Stream<List<Waypoint>> watchWaypoints(String sn) {
-    return _waypointStreams.putIfAbsent(sn, () => _pollWaypoints(sn).asBroadcastStream());
+    final controller = _waypointControllers.putIfAbsent(sn, () {
+      final c = StreamController<List<Waypoint>>.broadcast();
+      _pollWaypointsInto(sn, c);
+      return c;
+    });
+    return controller.stream;
   }
 
-  Stream<List<Waypoint>> _pollWaypoints(String sn) async* {
-    while (true) {
+  Future<List<Waypoint>> _fetchWaypoints(String sn) async {
+    final res = await http
+        .get(
+          Uri.parse('${BackendConfig.baseUrl}/devices/$sn/waypoints'),
+          headers: AuthService.bearerHeader,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception(
+          '[DeviceService] GET /devices/$sn/waypoints -> HTTP ${res.statusCode}: ${res.body}');
+    }
+    final list = jsonDecode(res.body) as List;
+    return list.map((e) => Waypoint.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  void _pollWaypointsInto(String sn, StreamController<List<Waypoint>> controller) async {
+    while (!controller.isClosed) {
       try {
-        final res = await http
-            .get(
-              Uri.parse('${BackendConfig.baseUrl}/devices/$sn/waypoints'),
-              headers: AuthService.bearerHeader,
-            )
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode == 200) {
-          final list = jsonDecode(res.body) as List;
-          yield list.map((e) => Waypoint.fromJson(e as Map<String, dynamic>)).toList();
-        } else {
-          debugPrint(
-              '[DeviceService] GET /devices/$sn/waypoints -> HTTP ${res.statusCode}: ${res.body}');
-        }
+        final points = await _fetchWaypoints(sn);
+        if (!controller.isClosed) controller.add(points);
       } catch (e) {
         debugPrint('[DeviceService] watchWaypoints($sn) gagal: $e');
       }
       await Future.delayed(_pollInterval);
+    }
+  }
+
+  /// Fetch ulang segera dan dorong ke stream yang sudah ada (kalau ada
+  /// listener aktif) - dipanggil setelah addWaypoint()/removeWaypoint()
+  /// sukses supaya UI update instan, tidak nunggu tick polling berikutnya.
+  Future<void> _refreshWaypointsNow(String sn) async {
+    final controller = _waypointControllers[sn];
+    if (controller == null || controller.isClosed) return;
+    try {
+      final points = await _fetchWaypoints(sn);
+      if (!controller.isClosed) controller.add(points);
+    } catch (e) {
+      debugPrint('[DeviceService] refreshWaypointsNow($sn) gagal: $e');
     }
   }
 
@@ -147,6 +175,7 @@ class DeviceService {
     if (res.statusCode != 200) {
       throw Exception('Gagal menambah waypoint (HTTP ${res.statusCode}): ${res.body}');
     }
+    await _refreshWaypointsNow(sn);
   }
 
   Future<void> removeWaypoint({required String sn, required String waypointId}) async {
@@ -159,6 +188,7 @@ class DeviceService {
     if (res.statusCode != 204) {
       throw Exception('Gagal menghapus waypoint (HTTP ${res.statusCode}): ${res.body}');
     }
+    await _refreshWaypointsNow(sn);
   }
 
   /// Riwayat posisi dalam [days] hari terakhir, terurut dari yang paling

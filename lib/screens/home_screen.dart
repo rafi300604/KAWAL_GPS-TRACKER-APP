@@ -275,6 +275,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   ///   ke tombol Waypoint/ETA/History biasa. Device yang sedang dipilih
   ///   TETAP terpilih (tidak ikut ke-deselect) - cuma fitur history-nya
   ///   yang ditutup.
+  /// Ukuran font/padding tombol Waypoint/ETA/History dikecilkan SEDIKIT,
+  /// KHUSUS di iOS - font sistem iOS merender label yang persis sama lebih
+  /// lebar daripada Roboto di Android, jadi 3 tombol yang di Android SELALU
+  /// muat dalam satu baris bisa terpaksa pindah ke baris kedua di iOS (tata
+  /// letak jadi beda antar platform). Ini murni penyesuaian ukuran visual
+  /// biar tata letaknya persis sama (satu baris, rata kanan) seperti
+  /// Android. TIDAK PERNAH memengaruhi Android/web - di sana kondisinya
+  /// selalu false, jadi style/ukurannya null/default seperti semula, tidak
+  /// berubah sama sekali.
+  bool _isIOS(BuildContext context) => Theme.of(context).platform == TargetPlatform.iOS;
+
+  ButtonStyle? _iOSCompactButtonStyle(BuildContext context) {
+    if (!_isIOS(context)) return null;
+    return FilledButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      textStyle: const TextStyle(fontSize: 13),
+    );
+  }
+
+  double _iOSCompactIconSize(BuildContext context) => _isIOS(context) ? 16 : 18;
+
   void _cancelTrackingSlider() {
     _historyTimer?.cancel();
     if (_playbackComplete) {
@@ -454,10 +475,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                           children: [
                                             if (_historyPoints.isEmpty) ...[
                                               FilledButton.icon(
+                                                style: _iOSCompactButtonStyle(context),
                                                 onPressed: () => _addWaypoint(selected!),
-                                                icon: const Icon(
-                                                    Icons.add_location_alt_outlined,
-                                                    size: 18),
+                                                icon: Icon(Icons.add_location_alt_outlined,
+                                                    size: _iOSCompactIconSize(context)),
                                                 label: const Text('Waypoint'),
                                               ),
                                               // Solid fill (not outlined) so the button stays
@@ -466,23 +487,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                               // to double as a toggle state.
                                               _showEtaPanel
                                                   ? FilledButton.icon(
+                                                      style: _iOSCompactButtonStyle(context),
                                                       onPressed: () => setState(
                                                           () => _showEtaPanel = false),
-                                                      icon: const Icon(Icons.flag, size: 18),
+                                                      icon: Icon(Icons.flag,
+                                                          size: _iOSCompactIconSize(context)),
                                                       label: const Text('ETA'),
                                                     )
                                                   : FilledButton.tonalIcon(
+                                                      style: _iOSCompactButtonStyle(context),
                                                       onPressed: () => setState(
                                                           () => _showEtaPanel = true),
-                                                      icon: const Icon(Icons.flag_outlined,
-                                                          size: 18),
+                                                      icon: Icon(Icons.flag_outlined,
+                                                          size: _iOSCompactIconSize(context)),
                                                       label: const Text('ETA'),
                                                     ),
                                             ],
                                             FilledButton.tonalIcon(
+                                              style: _iOSCompactButtonStyle(context),
                                               onPressed: () =>
                                                   _openTrackingHistoryDialog(selected!),
-                                              icon: const Icon(Icons.route_outlined, size: 18),
+                                              icon: Icon(Icons.route_outlined,
+                                                  size: _iOSCompactIconSize(context)),
                                               label: const Text('History'),
                                             ),
                                             if (_historyPoints.isNotEmpty)

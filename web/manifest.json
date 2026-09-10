@@ -1,11 +1,11 @@
 {
-    "name": "skripsi_gps_tracker",
-    "short_name": "skripsi_gps_tracker",
+    "name": "KAWAL",
+    "short_name": "KAWAL",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0F3D6E",
+    "theme_color": "#0F3D6E",
+    "description": "KAWAL - GPS tracking real-time untuk perangkat ESP32.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

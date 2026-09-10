@@ -1,5 +1,5 @@
 name: skripsi_gps_tracker
-description: "A new Flutter project."
+description: "GPS tracking app for a skripsi project - live position, waypoints/ETA, and tracking history for a custom ESP32 GPS tracker."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

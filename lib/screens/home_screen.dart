@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -493,13 +492,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                                 icon: const Icon(Icons.file_download_outlined,
                                                     size: 18),
                                                 label: const Text('Ekspor'),
-                                              ),
-                                            if (kDebugMode && auth.isAdmin)
-                                              IconButton.filledTonal(
-                                                tooltip: 'Simulasikan ESP32 (debug)',
-                                                onPressed: () =>
-                                                    _deviceService.simulateStep(selected!),
-                                                icon: const Icon(Icons.bug_report_outlined),
                                               ),
                                           ],
                                         ),

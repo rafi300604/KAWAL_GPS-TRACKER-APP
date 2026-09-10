@@ -1,107 +1,173 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'dart:convert';
 
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../config/backend_config.dart';
 import '../models/app_user.dart';
 
-/// Wraps Firebase Auth (email/password) and the matching `users/{uid}` Firestore
-/// profile doc that carries the app role (admin | user | device).
+/// Login pengguna (email/password) lewat backend FastAPI sendiri
+/// (`POST /auth/login`, JWT) — menggantikan Firebase Auth + Firestore
+/// `users/{uid}` sepenuhnya. Token disimpan di SharedPreferences (sama
+/// seperti mode tema), dilampirkan sebagai `Authorization: Bearer <token>`
+/// di semua request user/waypoints berikutnya.
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  static const _tokenPrefsKey = 'auth_token';
 
-  Stream<User?> get authStateChanges => _auth.authStateChanges();
+  // Static (bukan instance field): DeviceService dibuat sebagai field
+  // initializer di HomeScreen, sebelum context/Provider<AuthProvider>
+  // tersedia, jadi tidak bisa disuntik instance AuthService yang sama lewat
+  // constructor. Token disimpan di sini supaya DeviceService (lewat
+  // AuthService.bearerHeader) selalu baca token TERKINI, siapa pun
+  // instance AuthService yang menuliskannya (login/logout/restoreSession).
+  static String? _token;
 
-  User? get currentUser => _auth.currentUser;
+  /// Dipakai DeviceService untuk endpoint waypoints (butuh login user biasa,
+  /// beda dari X-Admin-Key/X-API-Key statis yang dipakai endpoint device).
+  static Map<String, String> get bearerHeader =>
+      _token != null ? {'Authorization': 'Bearer $_token'} : {};
 
-  CollectionReference<Map<String, dynamic>> get _usersRef =>
-      _db.collection('users');
+  Map<String, String> get _authHeaders => bearerHeader;
 
-  Future<UserCredential> signIn({
-    required String email,
-    required String password,
-  }) {
-    return _auth.signInWithEmailAndPassword(email: email, password: password);
+  Map<String, String> get _jsonHeaders => {
+        'Content-Type': 'application/json',
+        ..._authHeaders,
+      };
+
+  /// Dipanggil sekali saat app start: baca token tersimpan (kalau ada) dan
+  /// validasi masih hidup lewat GET /users/me. Token yang sudah
+  /// kedaluwarsa/tidak valid otomatis dibuang, bukan dibiarkan nyangkut.
+  Future<AppUser?> restoreSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_tokenPrefsKey);
+    if (saved == null || saved.isEmpty) return null;
+    _token = saved;
+    try {
+      final res = await http
+          .get(Uri.parse('${BackendConfig.baseUrl}/users/me'), headers: _authHeaders)
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        return AppUser.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+      }
+    } catch (_) {
+      // Jaringan bermasalah sesaat - jangan buang token cuma karena satu
+      // request gagal, biarkan user coba lagi (bukan dipaksa login ulang).
+      return null;
+    }
+    // Status selain 200 (mis. 401 token kedaluwarsa) berarti token memang
+    // tidak valid lagi - buang supaya tidak dicoba-coba lagi tiap start.
+    _token = null;
+    await prefs.remove(_tokenPrefsKey);
+    return null;
   }
 
-  Future<void> signOut() => _auth.signOut();
-
-  Stream<AppUser?> watchAppUser(String uid) {
-    return _usersRef.doc(uid).snapshots().map((doc) {
-      if (!doc.exists) return null;
-      return AppUser.fromFirestore(doc);
-    });
+  Future<AppUser> login({required String email, required String password}) async {
+    final res = await http
+        .post(
+          Uri.parse('${BackendConfig.baseUrl}/auth/login'),
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email, 'password': password}),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) {
+      String detail = 'Email atau kata sandi salah';
+      try {
+        detail = (jsonDecode(res.body) as Map<String, dynamic>)['detail'] as String? ?? detail;
+      } catch (_) {
+        // respons bukan JSON (mis. error jaringan/proxy) - pakai pesan default di atas
+      }
+      throw AuthException(detail);
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    _token = data['accessToken'] as String;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_tokenPrefsKey, _token!);
+    return AppUser.fromJson(data['user'] as Map<String, dynamic>);
   }
 
-  Stream<List<AppUser>> watchAllUsers() {
-    return _usersRef.orderBy('createdAt', descending: true).snapshots().map(
-          (snap) => snap.docs.map(AppUser.fromFirestore).toList(),
-        );
+  Future<void> logout() async {
+    _token = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_tokenPrefsKey);
   }
 
-  /// Admin-only: creates a new Firebase Auth account + Firestore profile
-  /// without disturbing the admin's own signed-in session. Uses a throwaway
-  /// secondary [FirebaseApp] instance for the account creation call, then
-  /// writes the profile doc using the *primary* app (still signed in as the
-  /// admin), which is what Firestore security rules check against.
-  Future<void> createUserAsAdmin({
+  Future<List<AppUser>> fetchAllUsers() async {
+    final res = await http
+        .get(Uri.parse('${BackendConfig.baseUrl}/users'), headers: _authHeaders)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception('Gagal memuat pengguna (HTTP ${res.statusCode})');
+    }
+    final list = jsonDecode(res.body) as List;
+    return list.map((e) => AppUser.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// Admin-only: buat akun baru langsung di server (hash password server-side)
+  /// -- jauh lebih simpel dari trik "secondary Firebase app" sebelumnya, karena
+  /// admin memang tidak pernah kehilangan sesinya sendiri di sini.
+  Future<AppUser> createUserAsAdmin({
     required String name,
     required String email,
     required String password,
     required String role,
   }) async {
-    final secondaryApp = await Firebase.initializeApp(
-      name: 'secondaryApp_${DateTime.now().microsecondsSinceEpoch}',
-      options: Firebase.app().options,
-    );
-    try {
-      final secondaryAuth = FirebaseAuth.instanceFor(app: secondaryApp);
-      final credential = await secondaryAuth.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-      final uid = credential.user!.uid;
-      await secondaryAuth.signOut();
-
-      final user = AppUser(
-        uid: uid,
-        name: name,
-        email: email,
-        role: role,
-        createdAt: DateTime.now(),
-      );
-      await _usersRef.doc(uid).set(user.toFirestore());
-    } finally {
-      await secondaryApp.delete();
+    final res = await http
+        .post(
+          Uri.parse('${BackendConfig.baseUrl}/users'),
+          headers: _jsonHeaders,
+          body: jsonEncode({'name': name, 'email': email, 'password': password, 'role': role}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception(_extractDetail(res.body, 'Gagal membuat pengguna (HTTP ${res.statusCode})'));
     }
+    return AppUser.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  /// Admin-only: updates another user's display name and/or role.
-  /// (Email changes are out of scope — they require the Admin SDK.)
-  Future<void> updateUserAsAdmin({
+  Future<AppUser> updateUserAsAdmin({
     required AppUser existing,
     required String name,
     required String role,
   }) async {
-    final updated = AppUser(
-      uid: existing.uid,
-      name: name,
-      email: existing.email,
-      role: role,
-      createdAt: existing.createdAt,
-    );
-    await _usersRef.doc(existing.uid).set(updated.toFirestore());
+    final res = await http
+        .patch(
+          Uri.parse('${BackendConfig.baseUrl}/users/${existing.id}'),
+          headers: _jsonHeaders,
+          body: jsonEncode({'name': name, 'role': role}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception(_extractDetail(res.body, 'Gagal memperbarui (HTTP ${res.statusCode})'));
+    }
+    return AppUser.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  /// Self-service: updates the signed-in user's own display name (role unchanged).
-  Future<void> updateOwnName({required AppUser existing, required String name}) async {
-    final updated = AppUser(
-      uid: existing.uid,
-      name: name,
-      email: existing.email,
-      role: existing.role,
-      createdAt: existing.createdAt,
-    );
-    await _usersRef.doc(existing.uid).set(updated.toFirestore());
+  Future<AppUser> updateOwnName({required AppUser existing, required String name}) async {
+    final res = await http
+        .patch(
+          Uri.parse('${BackendConfig.baseUrl}/users/me'),
+          headers: _jsonHeaders,
+          body: jsonEncode({'name': name}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception(_extractDetail(res.body, 'Gagal memperbarui (HTTP ${res.statusCode})'));
+    }
+    return AppUser.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
+
+  String _extractDetail(String body, String fallback) {
+    try {
+      return (jsonDecode(body) as Map<String, dynamic>)['detail'] as String? ?? fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+}
+
+class AuthException implements Exception {
+  final String message;
+  const AuthException(this.message);
+  @override
+  String toString() => message;
 }

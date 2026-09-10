@@ -45,3 +45,36 @@ class Telemetry(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+class User(Base):
+    """Akun app (login) -- menggantikan Firebase Auth + Firestore users/{uid}.
+    Cuma 'admin' | 'user' (role 'device' dari skema Firestore lama sudah
+    tidak relevan -- device otentikasi pakai DEVICE_API_KEY, bukan akun)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(100))
+    role: Mapped[str] = mapped_column(String(20), default="user")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class Waypoint(Base):
+    """Titik tujuan yang diset user dari app untuk satu device -- dipakai
+    fitur ETA. Murni fitur sisi-app, tidak pernah ditulis firmware."""
+
+    __tablename__ = "waypoints"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_sn: Mapped[str] = mapped_column(String(50), ForeignKey("devices.sn"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    lat: Mapped[float] = mapped_column(Float)
+    lng: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )

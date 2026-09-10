@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -10,23 +8,23 @@ import '../config/backend_config.dart';
 import '../models/device_vessel.dart';
 import '../models/position_point.dart';
 import '../models/waypoint.dart';
+import 'auth_service.dart';
 
-/// Posisi/status device (live + riwayat) datang dari backend FastAPI sendiri
-/// (`gps.jejakpintar.cloud`, lihat FIRMWARE_CONTRACT.md) — ini yang ditulis
-/// firmware ESP32 lewat GSM/WiFi. Waypoints TETAP di Firestore
-/// (`devices/{sn}/waypoints`) karena backend baru tidak punya endpoint itu
-/// sama sekali dan waypoints murni fitur sisi-app, tidak pernah disentuh
-/// firmware.
+/// Posisi/status device (live + riwayat) DAN waypoints, semuanya dari
+/// backend FastAPI sendiri (`gps.jejakpintar.cloud`, lihat
+/// FIRMWARE_CONTRACT.md) — Firestore sudah tidak dipakai sama sekali lagi di
+/// class ini (waypoints dulu di Firestore, sekarang di tabel `waypoints`
+/// backend, dilindungi login user biasa lewat JWT - lihat AuthService).
 class DeviceService {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
-
   static const _pollInterval = Duration(seconds: 5);
-
-  CollectionReference<Map<String, dynamic>> get _devicesRef =>
-      _db.collection('devices');
 
   Map<String, String> get _adminHeaders => {
         'X-Admin-Key': BackendConfig.adminApiKey,
+      };
+
+  Map<String, String> get _userJsonHeaders => {
+        'Content-Type': 'application/json',
+        ...AuthService.bearerHeader,
       };
 
   // CATATAN PENTING: UI memanggil watchAllDevices()/watchDevice() langsung di
@@ -101,13 +99,36 @@ class DeviceService {
     }
   }
 
+  // Sama seperti watchAllDevices()/watchDevice() - broadcast stream yang
+  // di-cache per sn, supaya rebuild widget tidak memicu polling loop baru
+  // tiap kali (lihat catatan panjang di atas watchAllDevices()).
+  final Map<String, Stream<List<Waypoint>>> _waypointStreams = {};
+
   Stream<List<Waypoint>> watchWaypoints(String sn) {
-    return _devicesRef
-        .doc(sn)
-        .collection('waypoints')
-        .orderBy('createdAt')
-        .snapshots()
-        .map((snap) => snap.docs.map(Waypoint.fromFirestore).toList());
+    return _waypointStreams.putIfAbsent(sn, () => _pollWaypoints(sn).asBroadcastStream());
+  }
+
+  Stream<List<Waypoint>> _pollWaypoints(String sn) async* {
+    while (true) {
+      try {
+        final res = await http
+            .get(
+              Uri.parse('${BackendConfig.baseUrl}/devices/$sn/waypoints'),
+              headers: AuthService.bearerHeader,
+            )
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final list = jsonDecode(res.body) as List;
+          yield list.map((e) => Waypoint.fromJson(e as Map<String, dynamic>)).toList();
+        } else {
+          debugPrint(
+              '[DeviceService] GET /devices/$sn/waypoints -> HTTP ${res.statusCode}: ${res.body}');
+        }
+      } catch (e) {
+        debugPrint('[DeviceService] watchWaypoints($sn) gagal: $e');
+      }
+      await Future.delayed(_pollInterval);
+    }
   }
 
   Future<void> addWaypoint({
@@ -115,19 +136,29 @@ class DeviceService {
     required String name,
     required double lat,
     required double lng,
-  }) {
-    final waypoint = Waypoint(
-      id: '',
-      name: name,
-      lat: lat,
-      lng: lng,
-      createdAt: DateTime.now(),
-    );
-    return _devicesRef.doc(sn).collection('waypoints').add(waypoint.toFirestore());
+  }) async {
+    final res = await http
+        .post(
+          Uri.parse('${BackendConfig.baseUrl}/devices/$sn/waypoints'),
+          headers: _userJsonHeaders,
+          body: jsonEncode({'name': name, 'lat': lat, 'lng': lng}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw Exception('Gagal menambah waypoint (HTTP ${res.statusCode}): ${res.body}');
+    }
   }
 
-  Future<void> removeWaypoint({required String sn, required String waypointId}) {
-    return _devicesRef.doc(sn).collection('waypoints').doc(waypointId).delete();
+  Future<void> removeWaypoint({required String sn, required String waypointId}) async {
+    final res = await http
+        .delete(
+          Uri.parse('${BackendConfig.baseUrl}/devices/$sn/waypoints/$waypointId'),
+          headers: AuthService.bearerHeader,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 204) {
+      throw Exception('Gagal menghapus waypoint (HTTP ${res.statusCode}): ${res.body}');
+    }
   }
 
   /// Riwayat posisi dalam [days] hari terakhir, terurut dari yang paling
@@ -155,41 +186,4 @@ class DeviceService {
     yield points;
   }
 
-  /// Debug-only demo aid: nudges the primary device's position a small
-  /// random step by POSTing to the same `/telemetry` endpoint the real
-  /// firmware uses, so the app is demoable without the ESP32 hardware. See
-  /// FIRMWARE_CONTRACT.md for the real contract.
-  Future<void> simulateStep(DeviceVessel current) async {
-    final rand = Random();
-    final newLat = current.lat + (rand.nextDouble() - 0.5) * 0.01;
-    final newLng = current.lng + (rand.nextDouble() - 0.5) * 0.01;
-    final newHeading = (current.heading + (rand.nextDouble() - 0.5) * 30) % 360;
-    final newSpeed = (5 + rand.nextDouble() * 10).toDouble();
-
-    final res = await http
-        .post(
-          Uri.parse('${BackendConfig.baseUrl}/telemetry'),
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': BackendConfig.deviceApiKey,
-          },
-          body: jsonEncode({
-            'sn': current.sn,
-            'lat': newLat,
-            'lng': newLng,
-            'heading': newHeading,
-            'speedKnots': newSpeed,
-            'timestamp': DateTime.now().toUtc().toIso8601String(),
-            'name': current.name,
-            'powerSource': current.powerSource.isEmpty ? 'BATTERY' : current.powerSource,
-            'dataSource': 'WIFI',
-            'status': 'active',
-          }),
-        )
-        .timeout(const Duration(seconds: 10));
-
-    if (res.statusCode != 200) {
-      throw Exception('Simulasi gagal (HTTP ${res.statusCode}): ${res.body}');
-    }
-  }
 }

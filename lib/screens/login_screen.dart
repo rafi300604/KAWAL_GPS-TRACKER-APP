@@ -5,8 +5,9 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 
 // Debug-only tester account, prefilled by the "Login Cepat" shortcut below.
-// Must exist in Firebase Auth (create it once via Firebase Console, or the
-// app's own "Buat Pengguna" admin screen) — this shortcut does not create it.
+// Must already exist in the backend's `users` table (seeded once server-side,
+// or created via the app's own "Buat Pengguna" admin screen) — this shortcut
+// does not create it.
 const String _kTesterEmail = 'skripsi@tester.com';
 const String _kTesterPassword = 'tester123';
 

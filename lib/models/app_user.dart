@@ -1,14 +1,14 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import '../config/backend_config.dart';
 
 class AppUser {
-  final String uid;
+  final String id;
   final String name;
   final String email;
-  final String role; // 'admin' | 'user' | 'device'
+  final String role; // 'admin' | 'user'
   final DateTime createdAt;
 
   const AppUser({
-    required this.uid,
+    required this.id,
     required this.name,
     required this.email,
     required this.role,
@@ -17,23 +17,17 @@ class AppUser {
 
   bool get isAdmin => role == 'admin';
 
-  factory AppUser.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data() ?? {};
+  /// Dari respons backend FastAPI (`POST /auth/login`, `GET /users`,
+  /// `GET /users/me`) — lihat `backend/app/schemas.py:UserOut`.
+  factory AppUser.fromJson(Map<String, dynamic> json) {
     return AppUser(
-      uid: doc.id,
-      name: data['name'] as String? ?? '',
-      email: data['email'] as String? ?? '',
-      role: data['role'] as String? ?? 'user',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      id: json['id'].toString(),
+      name: json['name'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      role: json['role'] as String? ?? 'user',
+      createdAt: json['createdAt'] != null
+          ? parseBackendUtc(json['createdAt'] as String)
+          : DateTime.now(),
     );
-  }
-
-  Map<String, dynamic> toFirestore() {
-    return {
-      'name': name,
-      'email': email,
-      'role': role,
-      'createdAt': Timestamp.fromDate(createdAt),
-    };
   }
 }

@@ -61,3 +61,70 @@ class DeviceState(BaseModel):
     )
     heading: float | None = Field(None, validation_alias="last_heading")
     last_transmitted_at: datetime | None = Field(None, serialization_alias="lastTransmittedAt")
+
+
+# ===================================================================
+# Auth / users -- menggantikan Firebase Auth + Firestore users/{uid}
+# ===================================================================
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    """Admin-only (POST /users) -- role bebas dipilih admin."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., max_length=200)
+    password: str = Field(..., min_length=6)
+    role: str = Field("user")
+
+
+class UserUpdate(BaseModel):
+    """PATCH /users/{id} (admin: name+role) atau PATCH /users/me (self: cuma
+    name -- kalau role dikirim di endpoint /users/me, diabaikan server-side,
+    lihat main.py)."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    role: str | None = None
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: int
+    name: str
+    email: str
+    role: str
+    created_at: datetime = Field(serialization_alias="createdAt")
+
+
+class TokenOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    access_token: str = Field(serialization_alias="accessToken")
+    token_type: str = Field("bearer", serialization_alias="tokenType")
+    user: UserOut
+
+
+# ===================================================================
+# Waypoints -- menggantikan Firestore devices/{sn}/waypoints
+# ===================================================================
+
+
+class WaypointIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    lat: float
+    lng: float
+
+
+class WaypointOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: int
+    name: str
+    lat: float
+    lng: float
+    created_at: datetime = Field(serialization_alias="createdAt")

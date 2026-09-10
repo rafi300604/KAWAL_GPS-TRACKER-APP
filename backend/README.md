@@ -51,6 +51,9 @@ Isi `.env`:
   ```
 - `ADMIN_API_KEY` — untuk baca data (dashboard/admin). Generate dengan
   cara yang sama, pakai key **berbeda** dari `DEVICE_API_KEY`.
+- `JWT_SECRET` — buat menandatangani token login pengguna (`POST
+  /auth/login`). Generate dengan cara yang sama, pakai key **berbeda**
+  dari dua di atas.
 - `DOMAIN` — sudah di-set ke `gps.jejakpintar.cloud`, biarkan saja
   kecuali mau testing lokal (ganti ke `localhost`).
 
@@ -128,6 +131,64 @@ curl "https://gps.jejakpintar.cloud/telemetry/ESP32-01/history?limit=100" \
   -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
 ```
 
+## Login & manajemen pengguna
+
+Menggantikan Firebase Auth + Firestore `users/{uid}` sepenuhnya — login
+pakai email/password, dapat JWT (`Authorization: Bearer <token>`, berlaku
+30 hari, tidak ada refresh-token flow).
+
+```bash
+curl -X POST https://gps.jejakpintar.cloud/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "skripsi@tester.com", "password": "tester123"}'
+# -> {"accessToken": "...", "tokenType": "bearer", "user": {...}}
+```
+
+Profil sendiri (siapa saja yang login):
+
+```bash
+curl https://gps.jejakpintar.cloud/users/me -H "Authorization: Bearer <token>"
+curl -X PATCH https://gps.jejakpintar.cloud/users/me \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"name": "Nama Baru"}'
+```
+
+Manajemen pengguna (admin-only, `role='admin'` pada token):
+
+```bash
+curl https://gps.jejakpintar.cloud/users -H "Authorization: Bearer <admin-token>"
+
+curl -X POST https://gps.jejakpintar.cloud/users \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{"name": "User Baru", "email": "user@contoh.com", "password": "rahasia123", "role": "user"}'
+
+curl -X PATCH https://gps.jejakpintar.cloud/users/3 \
+  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{"name": "Nama Diedit", "role": "admin"}'
+
+curl -X DELETE https://gps.jejakpintar.cloud/users/3 -H "Authorization: Bearer <admin-token>"
+```
+
+`role` cuma `"admin"` atau `"user"` (bukan `"device"` lagi — device
+otentikasi pakai `DEVICE_API_KEY`, bukan akun pengguna).
+
+## Waypoints
+
+Menggantikan Firestore `devices/{sn}/waypoints` — siapa saja yang login
+boleh baca/tulis (tidak dibatasi role, sama seperti rule Firestore lama).
+
+```bash
+curl https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints \
+  -H "Authorization: Bearer <token>"
+
+curl -X POST https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"name": "Tujuan", "lat": -6.2, "lng": 106.8}'
+
+curl -X DELETE https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints/1 \
+  -H "Authorization: Bearer <token>"
+```
+
 ## Menambah migrasi baru (kalau schema berubah nanti)
 
 ```bash
@@ -144,10 +205,12 @@ Commit file migrasi baru yang muncul di `alembic/versions/` ke git.
   Firestore — diupdate tiap kali ada data masuk.
 - **`telemetry`** = log historis lengkap, satu baris per transmisi —
   dipakai untuk replay rute, bukan cuma "posisi sekarang".
-- **Auth dua lapis**: `X-API-Key` (shared, dipakai semua device untuk
-  kirim data) dan `X-Admin-Key` (dipakai dashboard/admin untuk baca
-  data). Device tidak bisa baca data device lain karena tidak pegang
-  admin key.
+- **`users`** = akun app (login), **`waypoints`** = titik tujuan per
+  device untuk fitur ETA — dua-duanya menggantikan Firestore sepenuhnya.
+- **Tiga skema auth berbeda, jangan tertukar**: `X-API-Key` (shared,
+  device kirim data), `X-Admin-Key` (shared, dashboard/admin baca data
+  device/telemetry), dan `Authorization: Bearer <JWT>` (per-user, dari
+  `/auth/login`, dipakai endpoint `/users/*` dan `/devices/*/waypoints`).
 - **HTTPS otomatis** lewat Caddy + domain `gps.jejakpintar.cloud` —
   tidak perlu setup certbot manual, port 8000/5432 tidak expose
   langsung ke internet.

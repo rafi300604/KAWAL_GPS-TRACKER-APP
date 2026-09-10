@@ -1,4 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import '../config/backend_config.dart';
 
 class Waypoint {
   final String id;
@@ -15,23 +15,17 @@ class Waypoint {
     required this.createdAt,
   });
 
-  factory Waypoint.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data() ?? {};
+  /// Dari respons backend FastAPI (`GET/POST /devices/{sn}/waypoints`) —
+  /// lihat `backend/app/schemas.py:WaypointOut`.
+  factory Waypoint.fromJson(Map<String, dynamic> json) {
     return Waypoint(
-      id: doc.id,
-      name: data['name'] as String? ?? '',
-      lat: (data['lat'] as num?)?.toDouble() ?? 0,
-      lng: (data['lng'] as num?)?.toDouble() ?? 0,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      id: json['id'].toString(),
+      name: json['name'] as String? ?? '',
+      lat: (json['lat'] as num?)?.toDouble() ?? 0,
+      lng: (json['lng'] as num?)?.toDouble() ?? 0,
+      createdAt: json['createdAt'] != null
+          ? parseBackendUtc(json['createdAt'] as String)
+          : DateTime.now(),
     );
-  }
-
-  Map<String, dynamic> toFirestore() {
-    return {
-      'name': name,
-      'lat': lat,
-      'lng': lng,
-      'createdAt': Timestamp.fromDate(createdAt),
-    };
   }
 }

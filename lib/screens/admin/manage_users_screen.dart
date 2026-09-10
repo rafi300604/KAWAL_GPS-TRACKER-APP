@@ -8,7 +8,12 @@ import 'edit_user_dialog.dart';
 /// Simplified admin user management (list/search/filter, create, edit
 /// name/role). Unlike the reference app's AdminUsersPage.vue, there is no
 /// device-to-vessel assignment screen — the single device's identity is
-/// fixed in Firestore/firmware config, not managed through this UI.
+/// fixed in the backend/firmware config, not managed through this UI.
+///
+/// Beda dari versi Firestore sebelumnya (snapshot listener realtime): daftar
+/// di sini di-fetch SEKALI lewat REST (GET /users), lalu di-refresh manual
+/// setelah create/edit berhasil - tidak ada polling, karena daftar pengguna
+/// jarang berubah dan tidak butuh reaktif real-time seperti posisi device.
 class ManageUsersScreen extends StatefulWidget {
   const ManageUsersScreen({super.key});
 
@@ -21,6 +26,24 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
   String _search = '';
   String _roleFilter = '';
   bool _busy = false;
+  Future<List<AppUser>>? _usersFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    // WAJIB block body ({ }), bukan arrow (=>) - closure arrow di sini akan
+    // balikin NILAI dari assignment-nya sendiri (Future<List<AppUser>> dari
+    // fetchAllUsers()), dan setState() menolak keras closure yang
+    // mengembalikan Future (persis ini yang sempat bikin app crash saat
+    // dites: "setState() callback argument returned a Future").
+    setState(() {
+      _usersFuture = _authService.fetchAllUsers();
+    });
+  }
 
   Future<void> _createUser() async {
     final draft = await showDialog<CreateUserDraft>(
@@ -36,6 +59,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
         password: draft.password,
         role: draft.role,
       );
+      _reload();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -59,6 +83,7 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
         name: result.name,
         role: result.role,
       );
+      _reload();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -73,8 +98,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
     switch (role) {
       case 'admin':
         return Colors.blue;
-      case 'device':
-        return Colors.purple;
       default:
         return Colors.green;
     }
@@ -86,6 +109,10 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
       appBar: AppBar(
         title: const Text('Kelola Pengguna'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _busy ? null : _reload,
+          ),
           IconButton(
             icon: const Icon(Icons.person_add_alt_outlined),
             onPressed: _busy ? null : _createUser,
@@ -115,7 +142,6 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
                     DropdownMenuItem(value: '', child: Text('Semua Role')),
                     DropdownMenuItem(value: 'admin', child: Text('Admin')),
                     DropdownMenuItem(value: 'user', child: Text('User')),
-                    DropdownMenuItem(value: 'device', child: Text('Device')),
                   ],
                   onChanged: (v) => setState(() => _roleFilter = v ?? ''),
                 ),
@@ -124,13 +150,16 @@ class _ManageUsersScreenState extends State<ManageUsersScreen> {
           ),
           if (_busy) const LinearProgressIndicator(),
           Expanded(
-            child: StreamBuilder<List<AppUser>>(
-              stream: _authService.watchAllUsers(),
+            child: FutureBuilder<List<AppUser>>(
+              future: _usersFuture,
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                var users = snapshot.data!;
+                if (snapshot.hasError) {
+                  return Center(child: Text('Gagal memuat pengguna: ${snapshot.error}'));
+                }
+                var users = snapshot.data ?? [];
                 if (_search.isNotEmpty) {
                   users = users
                       .where((u) =>

@@ -84,7 +84,6 @@ class _CreateUserDialogState extends State<CreateUserDialog> {
                 items: const [
                   DropdownMenuItem(value: 'user', child: Text('User')),
                   DropdownMenuItem(value: 'admin', child: Text('Admin')),
-                  DropdownMenuItem(value: 'device', child: Text('Device (ESP32)')),
                 ],
                 onChanged: (v) => setState(() => _role = v ?? 'user'),
               ),

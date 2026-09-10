@@ -65,16 +65,14 @@ class AppHeader extends StatelessWidget {
               onPressed: onMenuPressed,
               icon: const Icon(Icons.menu),
             ),
-          // Logo placeholder — swap for the real logo asset once it's provided.
-          Container(
-            width: logoSize,
-            height: logoSize,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.asset(
+              'assets/icons/kawal_icon.png',
+              width: logoSize,
+              height: logoSize,
+              fit: BoxFit.cover,
             ),
-            alignment: Alignment.center,
-            child: Icon(Icons.shield_outlined, color: theme.colorScheme.onPrimaryContainer),
           ),
           SizedBox(width: isCompact ? 10 : 16),
           Expanded(

@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "597358425117",
+    "firebase_url": "https://skripsigpstracking-4e687-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "skripsigpstracking-4e687",
+    "storage_bucket": "skripsigpstracking-4e687.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:597358425117:android:ae2f98360e533d4625c2f4",
+        "android_client_info": {
+          "package_name": "com.example.skripsi_gps_tracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBB1IzHp7F4LwVAo4Bw83muGLcY0MBGzr4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:597358425117:android:c3fb481cb1456b4f25c2f4",
+        "android_client_info": {
+          "package_name": "com.skripsi.gpstracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBB1IzHp7F4LwVAo4Bw83muGLcY0MBGzr4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

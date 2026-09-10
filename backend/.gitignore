@@ -1,0 +1,78 @@
+# ====================================================================
+# Jejak Pintar Telemetry Ingest — .gitignore
+# File ini filter baris yang TIDAK boleh commit ke git storan.
+# ====================================================================
+
+# ---- Secrets & env -------------------------------------------------
+# Setiap developer/VM kopi .env.example jadi .env lalu isi nilainya.
+# .env pegang password + API keys -- JANGAN commit sangke.
+.env
+.env.*
+!.env.example
+
+# ---- Python --------------------------------------------------------
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribusi / build artefakt
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Virtualenv
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Test & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+
+# Alembic cache (versions/ sendiri JANGAN ignore -- itu migrasi)
+alembic/versions/*.pyc
+
+# ---- Logs & temp ---------------------------------------------------
+*.log
+*.pid
+*.seed
+*.pid.lock
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.Trash-*/
+$RECYCLE.BIN/
+
+# ---- Database dumps ----
+*.sql.gz
+*.sql.bak
+*.dump
+
+# ---- IDE / editor --------------------------------------------------
+.vscode/
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+.sublime-workspace
+
+# ---- Docker artifacts (runtime only) --------------------------------
+# Volume data (db_data, caddy_data) tinggal di Docker, tidak di repo.

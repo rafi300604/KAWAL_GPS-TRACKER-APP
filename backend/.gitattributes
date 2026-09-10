@@ -1,0 +1,6 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Script shell -- alwaj LF (eol=lf) di commit, supaya shebang "#!/bin/sh"
+# tetap terbaca di Linux terlepas dari OS gitu file ke-edited/di-commit
+*.sh text eol=lf

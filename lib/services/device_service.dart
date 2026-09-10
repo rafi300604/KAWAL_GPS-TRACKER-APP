@@ -109,13 +109,49 @@ class DeviceService {
   // memicu polling loop baru tiap kali.
   final Map<String, StreamController<List<Waypoint>>> _waypointControllers = {};
 
+  // Salinan lokal daftar waypoint terakhir per sn - dipakai addWaypoint()/
+  // removeWaypoint() supaya bisa langsung SISIPKAN/BUANG satu item dan
+  // dorong hasilnya ke stream TANPA request GET tambahan (lihat
+  // _pushWaypoints()). Selalu disinkronkan ulang dari respons polling asli
+  // (_pollWaypointsInto()) supaya tidak pernah menyimpang dari backend kalau
+  // ada perubahan dari sumber lain (device lain, sesi lain).
+  final Map<String, List<Waypoint>> _waypointCache = {};
+
+  // Stream.multi (bukan controller.stream langsung) - broadcast stream BIASA
+  // tidak pernah memutar ulang event lama ke listener yang baru subscribe
+  // belakangan. Itu bug nyata di sini: EtaPanel di home_screen baru
+  // subscribe SETELAH _showEtaPanel di-set true, yaitu SETELAH
+  // addWaypoint()/_pushWaypoints() sudah mendorong data terbaru ke
+  // controller - jadi listener baru itu KELEWATAN dorongan itu dan sempat
+  // nampilin "Belum ada waypoint" sampai event berikutnya datang (bisa
+  // sampai 5 detik lagi), padahal datanya sendiri sudah ada dari awal.
+  // Stream.multi menjalankan callback-nya per listener (tidak seperti
+  // broadcast stream biasa), jadi listener BARU MANA PUN - kapan pun dia
+  // subscribe - selalu langsung dapat _waypointCache[sn] (kalau ada) sebagai
+  // event pertama, baru dilanjut forward event live dari controller.
+  // Instance-nya di-cache per sn (sama seperti watchAllDevices()/
+  // watchDevice()) supaya widget yang manggil watchWaypoints() tiap build()
+  // tidak memicu resubscribe/listen-cancel berulang ke controller.
+  final Map<String, Stream<List<Waypoint>>> _waypointBroadcastStreams = {};
+
   Stream<List<Waypoint>> watchWaypoints(String sn) {
     final controller = _waypointControllers.putIfAbsent(sn, () {
       final c = StreamController<List<Waypoint>>.broadcast();
       _pollWaypointsInto(sn, c);
       return c;
     });
-    return controller.stream;
+    return _waypointBroadcastStreams.putIfAbsent(sn, () {
+      return Stream<List<Waypoint>>.multi((emitter) {
+        final cached = _waypointCache[sn];
+        if (cached != null) emitter.add(cached);
+        final sub = controller.stream.listen(
+          emitter.add,
+          onError: emitter.addError,
+          onDone: emitter.close,
+        );
+        emitter.onCancel = sub.cancel;
+      });
+    });
   }
 
   Future<List<Waypoint>> _fetchWaypoints(String sn) async {
@@ -137,6 +173,7 @@ class DeviceService {
     while (!controller.isClosed) {
       try {
         final points = await _fetchWaypoints(sn);
+        _waypointCache[sn] = points;
         if (!controller.isClosed) controller.add(points);
       } catch (e) {
         debugPrint('[DeviceService] watchWaypoints($sn) gagal: $e');
@@ -145,18 +182,15 @@ class DeviceService {
     }
   }
 
-  /// Fetch ulang segera dan dorong ke stream yang sudah ada (kalau ada
-  /// listener aktif) - dipanggil setelah addWaypoint()/removeWaypoint()
-  /// sukses supaya UI update instan, tidak nunggu tick polling berikutnya.
-  Future<void> _refreshWaypointsNow(String sn) async {
+  /// Dorong daftar waypoint terbaru langsung ke stream yang sudah ada (kalau
+  /// ada listener aktif) - tanpa request jaringan sama sekali, jadi UI
+  /// (panel ETA, rute di peta) ikut berubah SAAT ITU JUGA begitu
+  /// addWaypoint()/removeWaypoint() sukses, bukan nunggu tick polling
+  /// berikutnya (bisa sampai 5 detik) ATAU nunggu satu GET tambahan.
+  void _pushWaypoints(String sn, List<Waypoint> points) {
+    _waypointCache[sn] = points;
     final controller = _waypointControllers[sn];
-    if (controller == null || controller.isClosed) return;
-    try {
-      final points = await _fetchWaypoints(sn);
-      if (!controller.isClosed) controller.add(points);
-    } catch (e) {
-      debugPrint('[DeviceService] refreshWaypointsNow($sn) gagal: $e');
-    }
+    if (controller != null && !controller.isClosed) controller.add(points);
   }
 
   Future<void> addWaypoint({
@@ -175,7 +209,12 @@ class DeviceService {
     if (res.statusCode != 200) {
       throw Exception('Gagal menambah waypoint (HTTP ${res.statusCode}): ${res.body}');
     }
-    await _refreshWaypointsNow(sn);
+    // Backend membalas objek waypoint yang baru dibuat (lengkap dengan id
+    // dari server) - pakai itu langsung, tidak perlu GET ulang cuma untuk
+    // tahu apa yang baru saja kita simpan sendiri.
+    final created = Waypoint.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    final current = _waypointCache[sn] ?? const <Waypoint>[];
+    _pushWaypoints(sn, [...current, created]);
   }
 
   Future<void> removeWaypoint({required String sn, required String waypointId}) async {
@@ -188,7 +227,8 @@ class DeviceService {
     if (res.statusCode != 204) {
       throw Exception('Gagal menghapus waypoint (HTTP ${res.statusCode}): ${res.body}');
     }
-    await _refreshWaypointsNow(sn);
+    final current = _waypointCache[sn] ?? const <Waypoint>[];
+    _pushWaypoints(sn, current.where((w) => w.id != waypointId).toList());
   }
 
   /// Riwayat posisi dalam [days] hari terakhir, terurut dari yang paling

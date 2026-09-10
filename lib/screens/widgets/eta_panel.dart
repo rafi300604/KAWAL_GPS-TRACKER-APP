@@ -67,8 +67,18 @@ class EtaPanel extends StatelessWidget {
     }
   }
 
+  // `route` bisa non-null tapi SUDAH TIDAK COCOK LAGI dengan [waypoints]
+  // saat ini - home_screen sengaja tidak langsung membuang rute lama ke
+  // null begitu daftar waypoint berubah (supaya tidak "berkedip" kosong
+  // selama rute baru masih dihitung), jadi selalu validasi jumlah leg-nya
+  // cocok dengan jumlah waypoint sebelum dipakai. Tanpa ini, ringkasan Total
+  // Jarak/Waktu bisa nampilin angka rute LAMA (mis. untuk 2 waypoint) padahal
+  // yang tersisa sekarang cuma 1 - baris per-waypoint sudah benar (fallback
+  // garis lurus), tapi totalnya jadi tidak sinkron dan salah.
+  bool get _routeIsCurrent => route != null && route!.legs.length == waypoints.length;
+
   List<_RowData> _buildRows() {
-    if (route != null && route!.legs.length == waypoints.length) {
+    if (_routeIsCurrent) {
       return List.generate(waypoints.length, (i) {
         final leg = route!.legs[i];
         return _RowData(
@@ -105,7 +115,7 @@ class EtaPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final rows = _buildRows();
-    final usingFallback = route == null && waypoints.isNotEmpty;
+    final usingFallback = !_routeIsCurrent && waypoints.isNotEmpty;
 
     return Container(
       width: 300,
@@ -144,25 +154,44 @@ class EtaPanel extends StatelessWidget {
               padding: EdgeInsets.symmetric(vertical: 28, horizontal: 16),
               child: Center(child: Text('Belum ada waypoint', style: TextStyle(fontStyle: FontStyle.italic))),
             )
-          else if (routeLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 28, horizontal: 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                      width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
-                  SizedBox(height: 10),
-                  Text('Menghitung rute jalan...', style: TextStyle(fontStyle: FontStyle.italic)),
-                ],
-              ),
-            )
           else
+            // WAJIB tetap tampilkan rows (pakai fallback garis lurus,
+            // dihitung lokal - tidak ada request jaringan sama sekali) SAAT
+            // routeLoading masih true, bukan cuma spinner kosong. Waypoint
+            // yang baru disimpan harus langsung kelihatan jarak/ETA-nya -
+            // menunggu rute jalan (OSRM, bisa 1-3+ detik / bisa gagal kalau
+            // offline) sebelum menampilkan APA PUN bikin panel kelihatan
+            // "lama muncul" padahal datanya sendiri sudah ada dari awal.
+            // Begitu rute jalan selesai dihitung, angkanya otomatis
+            // diperhalus (straight-line -> jarak jalan sungguhan) lewat
+            // rebuild biasa (route berubah dari null ke RouteResult).
             Flexible(
               child: SingleChildScrollView(
                 child: Column(
                   children: [
-                    if (usingFallback)
+                    if (routeLoading)
+                      Container(
+                        width: double.infinity,
+                        color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 12,
+                              height: 12,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Menyempurnakan ke rute jalan... (jarak garis lurus dulu)',
+                                style: theme.textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else if (usingFallback)
                       Container(
                         width: double.infinity,
                         color: theme.colorScheme.errorContainer.withValues(alpha: 0.5),
@@ -243,10 +272,10 @@ class EtaPanel extends StatelessWidget {
 
   Widget _summarySection(BuildContext context, List<_RowData> rows) {
     final theme = Theme.of(context);
-    final totalDistance = route != null
+    final totalDistance = _routeIsCurrent
         ? route!.totalDistanceKm
         : rows.fold<double>(0, (sum, r) => sum + r.distanceKm);
-    final totalHours = route != null
+    final totalHours = _routeIsCurrent
         ? route!.totalDurationHours
         : rows.map((r) => r.hours).where((h) => h.isFinite).fold<double>(0, (sum, h) => sum + h);
     final totalLabel = formatDuration(totalHours);

@@ -229,35 +229,44 @@ class EtaPanel extends StatelessWidget {
                                       style: theme.textTheme.bodyMedium
                                           ?.copyWith(fontWeight: FontWeight.w600)),
                                   const SizedBox(height: 4),
-                                  // Wrap (bukan Row) - beda platform (khususnya iOS, font
-                                  // sistemnya sendiri) bisa bikin lebar teks "Jarak/ETA" ini
-                                  // beda sepersekian pixel dari Android, dan Row polos tanpa
-                                  // Expanded/Flexible akan overflow (RenderFlex overflowed)
-                                  // begitu totalnya sedikit saja melebihi lebar panel. Wrap
-                                  // otomatis pindah baris kalau tidak muat, jadi aman di
-                                  // platform/ukuran font mana pun tanpa memotong teks.
-                                  Wrap(
-                                    crossAxisAlignment: WrapCrossAlignment.center,
-                                    spacing: 8,
-                                    runSpacing: 4,
+                                  // Flexible + ellipsis di KEDUA teks (bukan Wrap) - Wrap
+                                  // cuma mencegah overflow di level ROW (kalau gabungan
+                                  // "Jarak: ..." dan "ETA: ..." kepanjangan, pindah baris),
+                                  // tapi SATU chunk teks yang sendirian sudah lebih lebar
+                                  // dari panel (mis. font sistem iOS + pengaturan aksesibilitas
+                                  // teks besar) tetap overflow sendiri - itu sebabnya tulisan
+                                  // "RIGHT OVERFLOWED" masih muncul di iOS walau sudah pakai
+                                  // Wrap. Flexible+ellipsis di Text memberi jaminan MUTLAK:
+                                  // teks otomatis mengecil/terpotong "..." pas-pasan sesuai
+                                  // ruang yang benar-benar tersedia, RenderFlex TIDAK PERNAH
+                                  // overflow lagi berapa pun besar font/text-scale perangkat.
+                                  Row(
                                     children: [
-                                      Text('Jarak: ${row.distanceKm.toStringAsFixed(2)} km',
-                                          style: theme.textTheme.bodySmall),
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            width: 8,
-                                            height: 8,
-                                            decoration: BoxDecoration(
-                                              color: _levelColor(row.level),
-                                              shape: BoxShape.circle,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text('ETA: ${row.durationLabel}',
-                                              style: theme.textTheme.bodySmall),
-                                        ],
+                                      Flexible(
+                                        child: Text(
+                                          'Jarak: ${row.distanceKm.toStringAsFixed(2)} km',
+                                          style: theme.textTheme.bodySmall,
+                                          overflow: TextOverflow.ellipsis,
+                                          maxLines: 1,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        width: 8,
+                                        height: 8,
+                                        decoration: BoxDecoration(
+                                          color: _levelColor(row.level),
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          'ETA: ${row.durationLabel}',
+                                          style: theme.textTheme.bodySmall,
+                                          overflow: TextOverflow.ellipsis,
+                                          maxLines: 1,
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -317,17 +326,27 @@ class EtaPanel extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      // Label di dalam Expanded (bukan Row spaceBetween polos) - sama
-      // seperti alasan Wrap di baris Jarak/ETA di atas: label+value ini
-      // pas-pasan lebarnya, dan beda metrik font antar platform bisa
-      // bikin Row spaceBetung overflow. Expanded pada label menyerap
-      // sisa/kekurangan lebar duluan sebelum sempat overflow.
+      // Flexible+ellipsis di label MAUPUN value (bukan cuma Expanded di
+      // label) - kalau value sendiri (mis. "Waktu Tiba" dengan tanggal+jam)
+      // sudah kepanjangan pada font/text-scale tertentu, Row tetap overflow
+      // walau labelnya sudah aman di Expanded. Ini jaminan mutlak: RenderFlex
+      // tidak akan overflow lagi di kombinasi label+value apa pun.
       child: Row(
         children: [
-          Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+          Flexible(
+            child: Text(label,
+                style: theme.textTheme.bodySmall,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1),
+          ),
           const SizedBox(width: 8),
-          Text(value,
-              style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
+          Flexible(
+            child: Text(value,
+                textAlign: TextAlign.right,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+                style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
+          ),
         ],
       ),
     );

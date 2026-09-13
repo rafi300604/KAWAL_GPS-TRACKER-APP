@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
+import '../models/device_alert.dart';
 import '../models/device_vessel.dart';
 import '../models/position_point.dart';
 import '../models/route_result.dart';
@@ -48,6 +49,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   bool _hasAutoSelected = false;
   bool _showEtaPanel = false;
 
+  // Notifikasi otomatis (mis. "kuota SIM menipis") - lihat _watchAlertsFor().
+  // _seenAlertIds dijaga di level State (bukan per-subscription) supaya ID
+  // yang sudah pernah muncul tidak dinotifikasi ulang kalau user
+  // pindah-pindah lalu balik lagi ke device yang sama.
+  StreamSubscription<List<DeviceAlert>>? _alertSub;
+  final Set<String> _seenAlertIds = {};
+  bool _alertBaselineReady = false;
+
   // Road-following route (OSRM) from the selected device to its waypoints,
   // in order — drives BOTH the map's road-following polyline and the ETA
   // panel's distance/time figures, so they're always showing the same route.
@@ -79,7 +88,43 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void dispose() {
     _flyAnimController.dispose();
     _historyTimer?.cancel();
+    _alertSub?.cancel();
     super.dispose();
+  }
+
+  /// Subscribe ke notifikasi device ini - baris PERTAMA yang diterima
+  /// dijadikan baseline "sudah dilihat" tanpa memunculkan apa pun (supaya
+  /// riwayat alert LAMA tidak diperlakukan seolah baru terjadi begitu app
+  /// dibuka), baris-baris SETELAHNYA yang belum pernah dilihat baru
+  /// ditampilkan sebagai SnackBar.
+  void _watchAlertsFor(String sn) {
+    _alertSub?.cancel();
+    _alertBaselineReady = false;
+    _alertSub = _deviceService.watchAlerts(sn).listen((alerts) {
+      if (!mounted) return;
+      if (!_alertBaselineReady) {
+        _seenAlertIds.addAll(alerts.map((a) => a.id));
+        _alertBaselineReady = true;
+        return;
+      }
+      final newOnes = alerts.where((a) => !_seenAlertIds.contains(a.id));
+      for (final alert in newOnes) {
+        _seenAlertIds.add(alert.id);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.sim_card_alert_outlined, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text(alert.message)),
+              ],
+            ),
+            backgroundColor: const Color(0xFFD64545),
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      }
+    });
   }
 
   /// Smoothly animates the map camera to [dest] at [destZoom].
@@ -129,6 +174,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _resetTrackingState();
       _resetRouteState();
     });
+    _watchAlertsFor(device.sn);
     _flyTo(LatLng(device.lat, device.lng), _kDeviceFocusZoom);
   }
 
@@ -142,6 +188,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _resetTrackingState();
       _resetRouteState();
     });
+    _alertSub?.cancel();
+    _alertSub = null;
   }
 
   /// Fetches (or re-fetches) the road-following route from the vessel to its

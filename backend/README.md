@@ -104,6 +104,17 @@ Field opsional (`speedKnots`, `heading`, `name`, `powerSource`,
 `status`) boleh diabaikan device kalau memang belum tersedia —
 `speedKnots` dan `heading` default ke `0` kalau tidak dikirim.
 
+`dataSource` **tidak selalu cuma `"GSM"`/`"WIFI"` polos** (maks. 50
+karakter) — firmware (`skripsi.ino`) juga bisa kirim string deskriptif
+seperti `"WIFI (GSM: kuota diduga habis)"` kalau mendeteksi sesi data GSM
+gagal berkali-kali padahal jaringan seluler terdaftar normal (heuristik
+kuota SIM habis — modem tidak punya cara membaca sisa kuota asli dari
+operator). Kalau string ini mengandung kata "kuota", backend otomatis
+mencatat satu baris di `device_alerts` (lihat `GET /devices/{sn}/alerts`
+di bawah) — dengan cooldown 12 jam per device supaya tidak spam satu baris
+per transmisi selama kondisinya masih berlangsung. Lihat
+`FIRMWARE_CONTRACT.md` untuk detail lengkap.
+
 Response-nya balikan **state terkini** device tersebut (posisi +
 status terbaru), berguna kalau firmware mau langsung konfirmasi data
 tersimpan tanpa GET terpisah.
@@ -128,6 +139,14 @@ Riwayat/histori posisi (untuk replay rute perjalanan):
 
 ```bash
 curl "https://gps.jejakpintar.cloud/telemetry/ESP32-01/history?limit=100" \
+  -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
+```
+
+Riwayat notifikasi otomatis device (mis. kuota SIM diduga habis — lihat
+catatan `dataSource` di atas):
+
+```bash
+curl "https://gps.jejakpintar.cloud/devices/ESP32-01/alerts?limit=20" \
   -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
 ```
 
@@ -207,10 +226,14 @@ Commit file migrasi baru yang muncul di `alembic/versions/` ke git.
   dipakai untuk replay rute, bukan cuma "posisi sekarang".
 - **`users`** = akun app (login), **`waypoints`** = titik tujuan per
   device untuk fitur ETA — dua-duanya menggantikan Firestore sepenuhnya.
+- **`device_alerts`** = riwayat notifikasi otomatis (mis. kuota SIM diduga
+  habis), dibuat backend sendiri (bukan ditulis firmware langsung) saat
+  `dataSource` di `/telemetry` mengandung kata kunci peringatan — lihat
+  catatan `dataSource` di bagian "Kirim data" di atas.
 - **Tiga skema auth berbeda, jangan tertukar**: `X-API-Key` (shared,
   device kirim data), `X-Admin-Key` (shared, dashboard/admin baca data
-  device/telemetry), dan `Authorization: Bearer <JWT>` (per-user, dari
-  `/auth/login`, dipakai endpoint `/users/*` dan `/devices/*/waypoints`).
+  device/telemetry/alerts), dan `Authorization: Bearer <JWT>` (per-user,
+  dari `/auth/login`, dipakai endpoint `/users/*` dan `/devices/*/waypoints`).
 - **HTTPS otomatis** lewat Caddy + domain `gps.jejakpintar.cloud` —
   tidak perlu setup certbot manual, port 8000/5432 tidak expose
   langsung ke internet.

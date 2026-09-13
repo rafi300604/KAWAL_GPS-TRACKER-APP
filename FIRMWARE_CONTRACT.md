@@ -84,11 +84,46 @@ X-API-Key: <DEVICE_API_KEY dari .env backend>
 }
 ```
 
-Field wajib: `sn`, `lat`, `lng`, `timestamp`, `dataSource` ("GSM" atau
-"WIFI"). Field opsional: `speedKnots`, `heading` (default `0` kalau tidak
-dikirim), `name`, `powerSource`, `status` (biasanya `"active"`, khusus jalur
-WiFi kalau perlu). `timestamp` dari jam satelit GPS (UTC ISO-8601), bukan NTP
-— sama seperti kontrak lama.
+Field wajib: `sn`, `lat`, `lng`, `timestamp`, `dataSource`. Field opsional:
+`speedKnots`, `heading` (default `0` kalau tidak dikirim), `name`,
+`powerSource`, `status` (biasanya `"active"`, khusus jalur WiFi kalau perlu).
+`timestamp` dari jam satelit GPS (UTC ISO-8601), bukan NTP — sama seperti
+kontrak lama.
+
+**`dataSource` bukan cuma `"GSM"`/`"WIFI"` polos** — firmware (`skripsi.ino`,
+lihat `QUOTA_WARNING_THRESHOLD`) bisa juga mengirim
+`"WIFI (GSM: kuota diduga habis)"` saat mendeteksi pola "jaringan seluler
+terdaftar normal tapi sesi data GSM gagal dibuka berkali-kali berturut-turut"
+— heuristik untuk kuota/pulsa data SIM habis (modem GSM TIDAK PUNYA cara
+membaca sisa kuota langsung dari operator, jadi ini indikasi tidak langsung,
+bukan kepastian). App/dashboard yang menampilkan `dataSource` sebaiknya
+tampilkan string ini APA ADANYA (bukan diasumsikan cuma dua nilai tetap),
+supaya peringatan ini kelihatan ke pengguna tanpa perlu ubah skema backend.
+
+**Sudah diakomodasi di backend + app (2026-09-13), lihat migrasi
+`0003_device_alerts.py`:**
+- Kolom `data_source` di tabel `devices` DAN `telemetry` diperlebar dari
+  `VARCHAR(10)` ke `VARCHAR(50)` — `VARCHAR(10)` yang lama akan bikin
+  `/telemetry` GAGAL (`StringDataRightTruncation`, HTTP 500) begitu
+  firmware kirim string sepanjang `"WIFI (GSM: kuota diduga habis)"` (31
+  karakter). Kalau firmware butuh string LEBIH PANJANG dari 50 karakter di
+  masa depan, kabari dulu supaya kolomnya diperlebar lagi sebelum dipakai —
+  jangan asumsikan tidak ada batas.
+- Setiap `/telemetry` yang `dataSource`-nya mengandung kata "kuota" (huruf
+  besar/kecil diabaikan) otomatis dicatat backend sebagai satu baris di
+  tabel `device_alerts` (cooldown 12 jam per device, supaya tidak spam satu
+  baris per transmisi selama kondisinya masih berlangsung) — bisa dibaca
+  lewat `GET /devices/{sn}/alerts` (lihat bagian 2 di bawah).
+- App Flutter menampilkan `dataSource` apa adanya di baris "Sumber Data"
+  (dengan ikon+warna peringatan kalau mengandung "kuota"), dan memunculkan
+  notifikasi (SnackBar merah) begitu alert BARU muncul di
+  `/devices/{sn}/alerts` — lihat `lib/screens/home_screen.dart:_watchAlertsFor`.
+- **Kata kunci "kuota" ini kontrak yang harus disepakati** — kalau
+  `QUOTA_WARNING_THRESHOLD`/pesan di firmware berubah formatnya, pastikan
+  potongan string yang dikirim di `dataSource` tetap mengandung kata
+  "kuota" (huruf besar/kecil bebas), atau kabari supaya
+  `QUOTA_WARNING_KEYWORD` di `backend/app/main.py` dan
+  `DeviceVessel.hasQuotaWarning` di app disesuaikan bersamaan.
 
 Device **tidak perlu registrasi terpisah** — baris di tabel `devices`
 otomatis dibuat/diupdate berdasarkan `sn`.
@@ -120,6 +155,7 @@ urutannya WAJIB dibalik.
 GET https://gps.jejakpintar.cloud/devices                    # semua device
 GET https://gps.jejakpintar.cloud/devices/{sn}                # satu device
 GET https://gps.jejakpintar.cloud/telemetry/{sn}/history?limit=100  # riwayat
+GET https://gps.jejakpintar.cloud/devices/{sn}/alerts?limit=20      # notifikasi (kuota dsb.)
 Header: X-Admin-Key: <ADMIN_API_KEY dari .env backend>
 ```
 

@@ -17,7 +17,13 @@ class TelemetryIn(BaseModel):
     timestamp: datetime = Field(..., description="Jam satelit GPS (UTC, ISO-8601), bukan NTP")
     name: str | None = Field(None, description="Nama kapal/alat dari config portal")
     power_source: str | None = Field(None, validation_alias="powerSource")
-    data_source: str = Field(..., validation_alias="dataSource", description='"GSM" atau "WIFI"')
+    data_source: str = Field(
+        ...,
+        validation_alias="dataSource",
+        max_length=50,
+        description='Biasanya "GSM"/"WIFI", tapi bisa juga string deskriptif seperti '
+        '"WIFI (GSM: kuota diduga habis)" -- lihat FIRMWARE_CONTRACT.md',
+    )
     status: str | None = Field(None, description='Biasanya "active", khusus jalur WiFi')
 
 
@@ -127,4 +133,21 @@ class WaypointOut(BaseModel):
     name: str
     lat: float
     lng: float
+    created_at: datetime = Field(serialization_alias="createdAt")
+
+
+# ===================================================================
+# Device alerts -- notifikasi otomatis (mis. kuota SIM menipis), dibuat
+# backend saat /telemetry menerima nilai di bawah ambang batas.
+# ===================================================================
+
+
+class DeviceAlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: int
+    device_sn: str = Field(serialization_alias="deviceSn")
+    type: str
+    message: str
+    value: float | None = None
     created_at: datetime = Field(serialization_alias="createdAt")

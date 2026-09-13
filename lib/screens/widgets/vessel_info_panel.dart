@@ -103,8 +103,19 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
             _infoRow(context, Icons.navigation_outlined, 'Arah',
                 '${v.heading.toStringAsFixed(0)}° (${formatHeadingCompass(v.heading)})'),
             _infoRow(context, Icons.bolt_outlined, 'Sumber Daya', v.powerSource),
-            _infoRow(context, Icons.wifi_outlined, 'Sumber Data',
-                v.dataSource + (v.wifiSsid != null ? ' (${v.wifiSsid})' : '')),
+            // dataSource TIDAK SELALU cuma "GSM"/"WIFI" polos - firmware bisa
+            // kirim string deskriptif seperti "WIFI (GSM: kuota diduga
+            // habis)" (lihat DeviceVessel.hasQuotaWarning), jadi tampilkan
+            // APA ADANYA (bukan cuma dua nilai tetap) dan beri warna
+            // peringatan kalau mengandung indikasi kuota - persis seperti
+            // yang diminta FIRMWARE_CONTRACT.md.
+            _infoRow(
+              context,
+              v.hasQuotaWarning ? Icons.sim_card_alert_outlined : Icons.wifi_outlined,
+              'Sumber Data',
+              v.dataSource + (v.wifiSsid != null ? ' (${v.wifiSsid})' : ''),
+              valueColor: v.hasQuotaWarning ? _statusColor(false) : null,
+            ),
             if (v.dataSource == 'WIFI' && v.ipv4 != null)
               _infoRow(context, Icons.lan_outlined, 'IPv4', v.ipv4!),
             _infoRow(context, Icons.schedule_outlined, 'Update Terakhir',
@@ -115,14 +126,15 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
     );
   }
 
-  Widget _infoRow(BuildContext context, IconData icon, String label, String value) {
+  Widget _infoRow(BuildContext context, IconData icon, String label, String value,
+      {Color? valueColor}) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
+          Icon(icon, size: 16, color: valueColor ?? theme.colorScheme.onSurfaceVariant),
           const SizedBox(width: 8),
           SizedBox(
             width: 100,
@@ -130,7 +142,11 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
           ),
-          Expanded(child: Text(value, style: theme.textTheme.bodyMedium)),
+          Expanded(
+            child: Text(value,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                    color: valueColor, fontWeight: valueColor != null ? FontWeight.w700 : null)),
+          ),
         ],
       ),
     );

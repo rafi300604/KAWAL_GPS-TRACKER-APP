@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -29,6 +31,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Notifikasi "kuota SIM diduga habis" -- lihat ingest_telemetry(). Modem GSM
+# tidak punya cara membaca sisa kuota asli dari operator, jadi firmware
+# (skripsi.ino) mengirim heuristik lewat field `dataSource` yang sudah ada
+# (bukan field angka baru) begitu mendeteksi sesi data GSM gagal berkali-kali
+# padahal jaringan seluler terdaftar normal -- lihat FIRMWARE_CONTRACT.md.
+# Cooldown mencegah satu baris device_alerts baru dibuat di SETIAP transmisi
+# selama kondisinya masih berlangsung (device bisa kirim tiap beberapa
+# detik), yang akan membanjiri riwayat alert dengan ratusan baris identik.
+QUOTA_WARNING_KEYWORD = "kuota"
+QUOTA_ALERT_COOLDOWN = timedelta(hours=12)
 
 
 @app.get("/health")
@@ -66,6 +79,27 @@ async def ingest_telemetry(payload: schemas.TelemetryIn, db: AsyncSession = Depe
     device.last_heading = payload.heading
     device.last_transmitted_at = payload.timestamp
 
+    if QUOTA_WARNING_KEYWORD in payload.data_source.lower():
+        cutoff = datetime.now(timezone.utc) - QUOTA_ALERT_COOLDOWN
+        recent_alert = await db.execute(
+            select(models.DeviceAlert.id)
+            .where(
+                models.DeviceAlert.device_sn == payload.sn,
+                models.DeviceAlert.type == "low_quota",
+                models.DeviceAlert.created_at >= cutoff,
+            )
+            .limit(1)
+        )
+        if recent_alert.scalar_one_or_none() is None:
+            db.add(
+                models.DeviceAlert(
+                    device_sn=payload.sn,
+                    type="low_quota",
+                    message=f"Device {payload.sn} melaporkan: {payload.data_source}",
+                    value=None,
+                )
+            )
+
     row = models.Telemetry(
         device_sn=payload.sn,
         ts=payload.timestamp,
@@ -102,6 +136,24 @@ async def get_device_state(sn: str, db: AsyncSession = Depends(get_db)):
     if device is None:
         raise HTTPException(status_code=404, detail="Device tidak ditemukan")
     return device
+
+
+@app.get(
+    "/devices/{sn}/alerts",
+    response_model=list[schemas.DeviceAlertOut],
+    dependencies=[Depends(require_admin)],
+)
+async def list_device_alerts(sn: str, limit: int = 20, db: AsyncSession = Depends(get_db)):
+    """Riwayat notifikasi otomatis device ini (mis. kuota SIM menipis) --
+    sama seperti /devices dan /telemetry/*/history, dibaca pakai X-Admin-Key
+    (bukan JWT), karena ini data device bukan data milik user tertentu."""
+    result = await db.execute(
+        select(models.DeviceAlert)
+        .where(models.DeviceAlert.device_sn == sn)
+        .order_by(models.DeviceAlert.created_at.desc())
+        .limit(min(limit, 100))
+    )
+    return result.scalars().all()
 
 
 @app.get(

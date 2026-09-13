@@ -14,6 +14,17 @@ class DeviceVessel {
   final String? ipv4;
   final DateTime lastTransmittedAt;
 
+  /// Modem GSM tidak punya cara membaca sisa kuota SIM asli dari operator,
+  /// jadi firmware (skripsi.ino) tidak pernah kirim angka kuota - alih-alih,
+  /// [dataSource] sendiri bisa berisi string deskriptif seperti
+  /// "WIFI (GSM: kuota diduga habis)" saat firmware mendeteksi heuristik itu
+  /// (sesi data GSM gagal berkali-kali padahal jaringan seluler terdaftar
+  /// normal). Cocokkan kata kunci yang sama dengan QUOTA_WARNING_KEYWORD di
+  /// `backend/app/main.py` supaya UI dan pembuatan notifikasi di backend
+  /// selalu sepakat kapan ini dianggap "peringatan kuota" - lihat
+  /// FIRMWARE_CONTRACT.md.
+  bool get hasQuotaWarning => dataSource.toLowerCase().contains('kuota');
+
   /// Alat dianggap AKTIF kalau data terakhir masuk dalam 24 jam terakhir -
   /// dihitung dari [lastTransmittedAt] vs waktu sekarang, BUKAN dari field
   /// [status]. [status] datang dari backend FastAPI dan pada praktiknya

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../config/backend_config.dart';
+import '../models/device_alert.dart';
 import '../models/device_vessel.dart';
 import '../models/position_point.dart';
 import '../models/waypoint.dart';
@@ -38,28 +39,61 @@ class DeviceService {
   // Jadi stream-nya WAJIB dibuat sekali saja per instance/sn dan dipakai
   // ulang (broadcast, supaya bisa dipakai lebih dari satu StreamBuilder
   // sekaligus - home_screen dan device_sidebar berbagi instance yang sama).
-  Stream<List<DeviceVessel>>? _allDevicesStream;
-  final Map<String, Stream<DeviceVessel?>> _deviceStreams = {};
+  // StreamController + Stream.multi (bukan asBroadcastStream() polos) -
+  // asBroadcastStream() TIDAK PERNAH memutar ulang event lama ke listener
+  // yang baru subscribe belakangan (sama seperti bug watchWaypoints() yang
+  // sudah diperbaiki - lihat catatan di _waypointBroadcastStreams). Bug
+  // nyata di sini: DeviceSidebar hidup di dalam Drawer, yang di-BONGKAR
+  // TOTAL (bukan cuma disembunyikan) tiap kali drawer ditutup - StreamBuilder
+  // di dalamnya cancel subscription lamanya, dan begitu drawer dibuka lagi,
+  // StreamBuilder BARU subscribe ke stream yang SAMA tapi TIDAK dapat
+  // replay data terakhir, jadi daftar device sempat kosong sampai tick
+  // polling berikutnya (bisa sampai 5 detik) - kelihatan seperti device
+  // "hilang" padahal cuma nunggu event pertama yang baru.
+  List<DeviceVessel>? _allDevicesCache;
+  final StreamController<List<DeviceVessel>> _allDevicesController =
+      StreamController<List<DeviceVessel>>.broadcast();
+  Stream<List<DeviceVessel>>? _allDevicesBroadcastStream;
+  bool _allDevicesPollStarted = false;
+
+  final Map<String, DeviceVessel?> _deviceCache = {};
+  final Map<String, StreamController<DeviceVessel?>> _deviceControllers = {};
+  final Map<String, Stream<DeviceVessel?>> _deviceBroadcastStreams = {};
 
   /// Semua device terdaftar, untuk daftar di sidebar — di-poll berkala
   /// karena endpoint REST ini bukan realtime stream seperti Firestore
   /// snapshot listener.
   Stream<List<DeviceVessel>> watchAllDevices() {
-    return _allDevicesStream ??= _pollAllDevices().asBroadcastStream();
+    if (!_allDevicesPollStarted) {
+      _allDevicesPollStarted = true;
+      _pollAllDevicesInto(_allDevicesController);
+    }
+    return _allDevicesBroadcastStream ??= Stream<List<DeviceVessel>>.multi((emitter) {
+      final cached = _allDevicesCache;
+      if (cached != null) emitter.add(cached);
+      final sub = _allDevicesController.stream.listen(
+        emitter.add,
+        onError: emitter.addError,
+        onDone: emitter.close,
+      );
+      emitter.onCancel = sub.cancel;
+    });
   }
 
-  Stream<List<DeviceVessel>> _pollAllDevices() async* {
-    while (true) {
+  void _pollAllDevicesInto(StreamController<List<DeviceVessel>> controller) async {
+    while (!controller.isClosed) {
       try {
         final res = await http
             .get(Uri.parse('${BackendConfig.baseUrl}/devices'), headers: _adminHeaders)
             .timeout(const Duration(seconds: 10));
         if (res.statusCode == 200) {
           final list = jsonDecode(res.body) as List;
-          yield list
+          final devices = list
               .map((e) => DeviceVessel.fromJson(e as Map<String, dynamic>))
               .toList()
             ..sort((a, b) => a.name.compareTo(b.name));
+          _allDevicesCache = devices;
+          if (!controller.isClosed) controller.add(devices);
         } else {
           debugPrint('[DeviceService] GET /devices -> HTTP ${res.statusCode}: ${res.body}');
         }
@@ -75,25 +109,79 @@ class DeviceService {
     }
   }
 
+  /// Tidak dipakai UI manapun saat ini (home_screen memfilter dari
+  /// watchAllDevices() sendiri) - tetap disediakan dan diperbaiki dengan pola
+  /// yang sama (bukan dibiarkan cacat) kalau nanti dipakai.
   Stream<DeviceVessel?> watchDevice(String sn) {
-    return _deviceStreams.putIfAbsent(sn, () => _pollDevice(sn).asBroadcastStream());
+    final controller = _deviceControllers.putIfAbsent(sn, () {
+      final c = StreamController<DeviceVessel?>.broadcast();
+      _pollDeviceInto(sn, c);
+      return c;
+    });
+    return _deviceBroadcastStreams.putIfAbsent(sn, () {
+      return Stream<DeviceVessel?>.multi((emitter) {
+        if (_deviceCache.containsKey(sn)) emitter.add(_deviceCache[sn]);
+        final sub = controller.stream.listen(
+          emitter.add,
+          onError: emitter.addError,
+          onDone: emitter.close,
+        );
+        emitter.onCancel = sub.cancel;
+      });
+    });
   }
 
-  Stream<DeviceVessel?> _pollDevice(String sn) async* {
-    while (true) {
+  void _pollDeviceInto(String sn, StreamController<DeviceVessel?> controller) async {
+    while (!controller.isClosed) {
       try {
         final res = await http
             .get(Uri.parse('${BackendConfig.baseUrl}/devices/$sn'), headers: _adminHeaders)
             .timeout(const Duration(seconds: 10));
         if (res.statusCode == 200) {
-          yield DeviceVessel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+          final device = DeviceVessel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+          _deviceCache[sn] = device;
+          if (!controller.isClosed) controller.add(device);
         } else if (res.statusCode == 404) {
-          yield null;
+          _deviceCache[sn] = null;
+          if (!controller.isClosed) controller.add(null);
         } else {
           debugPrint('[DeviceService] GET /devices/$sn -> HTTP ${res.statusCode}: ${res.body}');
         }
       } catch (e) {
         debugPrint('[DeviceService] watchDevice($sn) gagal: $e');
+      }
+      await Future.delayed(_pollInterval);
+    }
+  }
+
+  // Notifikasi otomatis device (mis. "kuota SIM menipis") - dibuat backend
+  // sendiri, murni dibaca (tidak pernah ditulis dari app), jadi cukup pola
+  // polling sederhana yang sama seperti watchDevice() di atas, tidak perlu
+  // Stream.multi/cache-untuk-push seperti waypoints.
+  final Map<String, Stream<List<DeviceAlert>>> _alertStreams = {};
+
+  Stream<List<DeviceAlert>> watchAlerts(String sn) {
+    return _alertStreams.putIfAbsent(sn, () => _pollAlerts(sn).asBroadcastStream());
+  }
+
+  Stream<List<DeviceAlert>> _pollAlerts(String sn) async* {
+    while (true) {
+      try {
+        final res = await http
+            .get(
+              Uri.parse('${BackendConfig.baseUrl}/devices/$sn/alerts'),
+              headers: _adminHeaders,
+            )
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode == 200) {
+          final list = jsonDecode(res.body) as List;
+          yield list.map((e) => DeviceAlert.fromJson(e as Map<String, dynamic>)).toList();
+        } else {
+          debugPrint(
+              '[DeviceService] GET /devices/$sn/alerts -> HTTP ${res.statusCode}: ${res.body}');
+        }
+      } catch (e) {
+        debugPrint('[DeviceService] watchAlerts($sn) gagal: $e');
       }
       await Future.delayed(_pollInterval);
     }

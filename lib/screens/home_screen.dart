@@ -567,6 +567,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                                   deviceName: selected!.name,
                                                   deviceSn: selected.sn,
                                                   days: 0,
+                                                  devicePowerSource: selected.powerSource,
                                                 ),
                                                 icon: const Icon(Icons.file_download_outlined,
                                                     size: 18),

@@ -17,10 +17,18 @@ class ExportService {
     required String deviceName,
     required String deviceSn,
     required int days,
+    String? devicePowerSource,
   }) async {
     final excel = Excel.createExcel();
     final sheetName = excel.getDefaultSheet()!;
     final sheet = excel[sheetName];
+
+    // DeviceVessel.powerSource default ke string kosong (bukan null) kalau
+    // backend tidak pernah melaporkannya - treat itu sama seperti "tidak
+    // ada fallback" (bukan fallback ke string kosong, yang bikin selnya
+    // kelihatan kosong padahal maksudnya "tidak diketahui").
+    final fallbackPowerSource =
+        (devicePowerSource != null && devicePowerSource.isNotEmpty) ? devicePowerSource : null;
 
     sheet.appendRow([
       TextCellValue('Kapal'),
@@ -43,9 +51,15 @@ class ExportService {
         DoubleCellValue(p.lng),
         DoubleCellValue(p.speedKnots * 1.852), // knot -> km/jam, sama seperti tampilan UI
         DoubleCellValue(p.heading),
-        // Nullable - riwayat lama (direkam sebelum kolom ini ditambah di
-        // backend) tidak punya nilai ini sama sekali, bukan cuma kosong.
-        TextCellValue(p.powerSource ?? '-'),
+        // p.powerSource null berarti titik ini direkam SEBELUM backend mulai
+        // menyimpan power_source per-transmisi (migrasi 0004) - bukan
+        // berarti device-nya tidak punya sumber daya. Sumber dayanya HAMPIR
+        // PASTI belum berubah dari yang sekarang diketahui (device fisik
+        // tetap terpasang ke sumber daya yang sama, tidak berpindah-pindah
+        // per transmisi) - jadi fallback ke [fallbackPowerSource] (nilai
+        // terkini device) jauh lebih berguna daripada "-" polos, yang
+        // kelihatan seperti data hilang padahal cuma belum pernah dicatat.
+        TextCellValue(p.powerSource ?? fallbackPowerSource ?? '-'),
         TextCellValue(p.dataSource ?? '-'),
       ]);
     }

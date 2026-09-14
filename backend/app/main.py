@@ -108,6 +108,7 @@ async def ingest_telemetry(payload: schemas.TelemetryIn, db: AsyncSession = Depe
         speed_knots=payload.speed_knots,
         heading=payload.heading,
         data_source=payload.data_source,
+        power_source=payload.power_source,
     )
     db.add(row)
     await db.commit()

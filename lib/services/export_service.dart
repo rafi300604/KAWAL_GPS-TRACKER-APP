@@ -30,6 +30,8 @@ class ExportService {
       TextCellValue('Lng'),
       TextCellValue('Kecepatan (km/jam)'),
       TextCellValue('Arah (derajat)'),
+      TextCellValue('Sumber Daya'),
+      TextCellValue('Sumber Data'),
     ]);
 
     for (final p in points) {
@@ -41,6 +43,10 @@ class ExportService {
         DoubleCellValue(p.lng),
         DoubleCellValue(p.speedKnots * 1.852), // knot -> km/jam, sama seperti tampilan UI
         DoubleCellValue(p.heading),
+        // Nullable - riwayat lama (direkam sebelum kolom ini ditambah di
+        // backend) tidak punya nilai ini sama sekali, bukan cuma kosong.
+        TextCellValue(p.powerSource ?? '-'),
+        TextCellValue(p.dataSource ?? '-'),
       ]);
     }
 

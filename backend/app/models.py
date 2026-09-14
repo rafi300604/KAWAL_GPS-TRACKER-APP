@@ -50,6 +50,13 @@ class Telemetry(Base):
     speed_knots: Mapped[float | None] = mapped_column(Float, nullable=True)
     heading: Mapped[float | None] = mapped_column(Float, nullable=True)
     data_source: Mapped[str | None] = mapped_column(String(50), nullable=True)  # lihat Device.data_source
+    # Dulu cuma disimpan di `devices` (state terkini), TIDAK per-transmisi --
+    # riwayat/export jadi tidak bisa menunjukkan sumber daya yang berlaku
+    # SAAT titik itu direkam (bisa berubah, mis. BATTERY -> SOLAR). Ditambah
+    # di sini supaya /telemetry/{sn}/history dan ekspor Excel bisa
+    # menampilkannya per baris, bukan cuma nilai terkini yang sama di semua
+    # baris.
+    power_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

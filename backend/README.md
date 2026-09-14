@@ -135,7 +135,11 @@ curl https://gps.jejakpintar.cloud/devices/ESP32-01 \
   -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
 ```
 
-Riwayat/histori posisi (untuk replay rute perjalanan):
+Riwayat/histori posisi (untuk replay rute perjalanan, dan ekspor Excel di
+app). Tiap baris ikut menyimpan `dataSource` dan `powerSource` PADA SAAT
+titik itu direkam (bukan cuma nilai terkini device) — baris lama yang
+direkam sebelum kolom `power_source` ditambahkan (migrasi 0004) balik
+`powerSource: null`, itu bukan bug:
 
 ```bash
 curl "https://gps.jejakpintar.cloud/telemetry/ESP32-01/history?limit=100" \

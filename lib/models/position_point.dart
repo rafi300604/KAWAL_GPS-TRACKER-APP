@@ -7,6 +7,8 @@ class PositionPoint {
   final double speedKnots;
   final double heading;
   final DateTime timestamp;
+  final String? powerSource;
+  final String? dataSource;
 
   const PositionPoint({
     required this.id,
@@ -15,6 +17,8 @@ class PositionPoint {
     required this.speedKnots,
     required this.heading,
     required this.timestamp,
+    this.powerSource,
+    this.dataSource,
   });
 
   /// Dari respons backend FastAPI (`GET /telemetry/{sn}/history`) — lihat
@@ -29,6 +33,8 @@ class PositionPoint {
       timestamp: json['timestamp'] != null
           ? parseBackendUtc(json['timestamp'] as String)
           : DateTime.now(),
+      powerSource: json['powerSource'] as String?,
+      dataSource: json['dataSource'] as String?,
     );
   }
 }

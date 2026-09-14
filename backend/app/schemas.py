@@ -43,6 +43,7 @@ class TelemetryOut(BaseModel):
     heading: float | None = None
     timestamp: datetime = Field(validation_alias="ts")
     data_source: str | None = Field(None, serialization_alias="dataSource")
+    power_source: str | None = Field(None, serialization_alias="powerSource")
     received_at: datetime
 
 

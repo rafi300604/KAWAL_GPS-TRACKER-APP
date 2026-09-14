@@ -90,7 +90,7 @@ class _TrackingHistoryDialogState extends State<TrackingHistoryDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Tracking History Kapal'),
+      title: const Text('Fleet Tracking History'),
       content: SizedBox(
         width: 360,
         child: Column(

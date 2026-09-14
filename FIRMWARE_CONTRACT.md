@@ -90,6 +90,25 @@ Field wajib: `sn`, `lat`, `lng`, `timestamp`, `dataSource`. Field opsional:
 `timestamp` dari jam satelit GPS (UTC ISO-8601), bukan NTP — sama seperti
 kontrak lama.
 
+**`powerSource` TIDAK PERNAH terkirim di praktiknya (ditemukan 2026-09-14)**
+— dicek langsung ke database: dari 324 baris riwayat `ESP32-01` (mulai
+2026-09-09 sampai transmisi PALING BARU per 2026-09-14, jauh setelah
+backend siap menyimpan field ini per-transmisi lewat migrasi
+`0004_telemetry_power_source.py`), **semuanya `NULL`** — bukan cuma data
+lama, transmisi HARI INI pun tidak menyertakannya. Backend/app sudah
+1000% siap terima dan tampilkan field ini (lihat `GET
+/telemetry/{sn}/history` -> `powerSource`, dan kolom "Sumber Daya" di
+ekspor Excel app) — yang kurang murni di sisi firmware: `skripsi.ino`
+kelihatannya tidak pernah menyertakan `powerSource` di body JSON
+`/telemetry`, padahal field ini SUDAH ada di kontrak sejak awal (bukan
+field baru). Mohon ditambahkan pengiriman `powerSource` (mis. `"BATTERY"`
+atau `"SOLAR"`, string bebas — backend tidak membatasi ke nilai tertentu,
+cuma disimpan & ditampilkan apa adanya) di setiap POST `/telemetry`,
+jalur GSM maupun WiFi, supaya riwayat/ekspor punya nilai per-titik yang
+akurat alih-alih fallback ke nilai `devices.power_source` yang sekarang
+terpaksa dipakai app (nilai lama yang entah kapan terakhir kali benar-benar
+dikirim, sebelum riwayat 324 baris yang tercatat saat ini).
+
 **`dataSource` bukan cuma `"GSM"`/`"WIFI"` polos** — firmware (`skripsi.ino`,
 lihat `QUOTA_WARNING_THRESHOLD`) bisa juga mengirim
 `"WIFI (GSM: kuota diduga habis)"` saat mendeteksi pola "jaringan seluler

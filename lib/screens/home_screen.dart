@@ -127,6 +127,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     });
   }
 
+  /// Ekspor riwayat tracking ke .xlsx lewat share sheet. Posisi tombol
+  /// dipakai sebagai titik asal popover share sheet (wajib di iPad dan
+  /// iPhone iOS 26+), dan kegagalan ditampilkan alih-alih diam saja.
+  Future<void> _exportHistory(BuildContext buttonContext, DeviceVessel vessel) async {
+    final box = buttonContext.findRenderObject() as RenderBox?;
+    final origin = box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+    try {
+      await _exportService.exportTrackingHistory(
+        points: _historyPoints,
+        deviceName: vessel.name,
+        deviceSn: vessel.sn,
+        days: 0,
+        devicePowerSource: vessel.powerSource,
+        sharePositionOrigin: origin,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal mengekspor data: $e')),
+      );
+    }
+  }
+
   /// Smoothly animates the map camera to [dest] at [destZoom].
   void _flyTo(LatLng dest, double destZoom) {
     final camera = _mapController.camera;
@@ -560,18 +583,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                               label: const Text('History'),
                                             ),
                                             if (_historyPoints.isNotEmpty)
-                                              FilledButton.tonalIcon(
-                                                onPressed: () =>
-                                                    _exportService.exportTrackingHistory(
-                                                  points: _historyPoints,
-                                                  deviceName: selected!.name,
-                                                  deviceSn: selected.sn,
-                                                  days: 0,
-                                                  devicePowerSource: selected.powerSource,
+                                              Builder(
+                                                builder: (buttonContext) => FilledButton.tonalIcon(
+                                                  onPressed: () => _exportHistory(buttonContext, selected!),
+                                                  icon: const Icon(Icons.file_download_outlined,
+                                                      size: 18),
+                                                  label: const Text('Ekspor'),
                                                 ),
-                                                icon: const Icon(Icons.file_download_outlined,
-                                                    size: 18),
-                                                label: const Text('Ekspor'),
                                               ),
                                           ],
                                         ),

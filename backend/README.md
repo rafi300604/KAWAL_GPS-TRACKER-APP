@@ -39,10 +39,9 @@ cp .env.example .env
 
 Isi `.env`:
 
-- `POSTGRES_USER` — superuser Postgres (dipakai healthcheck & yang create
-  database). Biarkan `postgres` kecuali punya alasan khusus.
+- `POSTGRES_USER` — user Postgres (mis. `kawal_gps_user`).
 - `POSTGRES_PASSWORD` — ganti dari default.
-- `POSTGRES_DB` — nama database aplikasi, mis. `telemetry_gps`. Wajib sama
+- `POSTGRES_DB` — nama database aplikasi, mis. `kawal_gps_db`. Wajib sama
   di semua container (compose menyusun `DATABASE_URL` dari nilai ini).
 - `DEVICE_API_KEY` — shared secret untuk **semua** device di fleet.
   Generate dengan:
@@ -119,6 +118,123 @@ Response-nya balikan **state terkini** device tersebut (posisi +
 status terbaru), berguna kalau firmware mau langsung konfirmasi data
 tersimpan tanpa GET terpisah.
 
+## Kirim data lewat MQTT (jalur GSM/seluler, hemat kuota)
+
+Alternatif dari HTTPS di atas, khusus device yang kirim lewat modem
+seluler (AT+HTTPS buka sesi TLS baru tiap kirim — boros kuota untuk
+device yang kirim sering; MQTT cuma sekali connect, lalu publish
+berkali-kali).
+
+Topic: `telemetry/<SN>` (mis. `telemetry/ESP32-01`). Payload: HEX MENTAH
+34 karakter (BUKAN dibungkus JSON) — identitas device datang dari topic,
+bukan diulang di payload. Format byte persis sama dengan field `d` di
+endpoint HTTPS di atas (lihat FIRMWARE_CONTRACT.md untuk layout byte
+lengkap) — backend decode pakai fungsi yang SAMA
+(`app/telemetry.py:decode_compact_telemetry`), jadi hasilnya identik
+apa pun jalur transportnya (termasuk alert kuota/tamper).
+
+### Setup broker MQTT (sekali saja, di VPS)
+
+**1. Password file** (autentikasi device — dipakai firmware, BUKAN
+backend; backend konek lewat listener internal anonymous):
+
+```bash
+mkdir -p mqtt/config/certs
+docker run --rm -v "$(pwd)/mqtt/config:/mosquitto/config" eclipse-mosquitto:2 \
+  mosquitto_passwd -b -c /mosquitto/config/passwd <USERNAME> <PASSWORD>
+```
+
+Satu kredensial dipakai bersama semua device di fleet (sama seperti
+`DEVICE_API_KEY` di jalur HTTPS). Generate password acak sendiri, JANGAN
+commit nilai asli ke repo (repo ini publik):
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+```
+
+(Berikan `<USERNAME>` dan password hasil generate di atas ke firmware
+untuk diisi ke `MQTT_USERNAME`/`MQTT_PASSWORD` di `skripsi.ino` — simpan
+di tempat lain, bukan di repo ini.)
+
+**2. Sertifikat TLS** — self-signed cukup untuk skala thesis (device
+perlu dikonfigurasi skip verifikasi hostname/CA, bukan cert asli dari
+CA publik):
+
+```bash
+openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+  -keyout mqtt/config/certs/server.key \
+  -out mqtt/config/certs/server.crt \
+  -subj "/CN=<domain broker ini>"
+cp mqtt/config/certs/server.crt mqtt/config/certs/ca.crt
+```
+
+**3. `docker compose up -d`** untuk deploy — port 8883 (publik,
+TLS+auth, dipakai device) langsung ikut jalan bareng service lain.
+
+**Penting**: `mqtt/config/passwd` dan `mqtt/config/certs/` sengaja
+di-`.gitignore` — ini kredensial/private key asli, jangan pernah commit
+ke git.
+
+**4. ACL** — batasi tiap device ke topic miliknya sendiri. Salin
+`mqtt/config/acl` (tidak berisi rahasia, ada di repo) ke folder config broker
+di VPS, pastikan `mosquitto.conf` di VPS punya `acl_file
+/mosquitto/config/acl` di bawah `listener 8883` (lihat template
+`mqtt/config/mosquitto.conf`), lalu `docker restart kawal-gps-mqtt`. Hasilnya
+user device hanya boleh menulis `telemetry/<SN>` & `cmd-ack/<SN>` dan membaca
+`cmd/<SN>` (SN = client id); device tidak bisa mengirim perintah atau membaca
+data device lain. Listener internal 1883 (backend) sengaja tanpa ACL — tidak
+terbuka ke internet.
+
+## Perintah ke device (MQTT dua arah)
+
+Server bisa mengirim perintah ke device lewat topic `cmd/<SN>`; device
+membalas di `cmd-ack/<SN>`. Saat ini ada empat perintah:
+
+| Perintah | Isi | Efek di device |
+|---|---|---|
+| `interval` | `{"cmd":"interval","interval_s":30,"duration_min":60}` | Interval kirim jadi `interval_s` detik (10–1800) di semua mode selama `duration_min` menit (1–180), lalu kembali normal sendiri. Reboot juga membatalkannya. |
+| `reset` | `{"cmd":"reset"}` | Batalkan override interval sekarang juga. |
+| `buzzer` | `{"cmd":"buzzer","duration_s":10}` | Bunyikan buzzer `duration_s` detik (1–20), bukan kejadian tamper. Setelah device membalas `applied`, backend membuat alert `remote_alarm` ("Alarm jarak jauh ...") yang memunculkan popup + suara di app. Ditolak kalau alarm tamper asli sedang aktif. |
+| `test_tamper` | `{"cmd":"test_tamper"}` | Simulasi tamper: buzzer berbunyi seperti tamper asli dan device langsung mengirim satu titik tamper bertanda uji (flags bit4). Backend membuat alert `tamper` biasa (alarm app tetap bunyi) dengan pesan berawalan `[UJI]`. |
+
+Kirim (hanya pemegang `X-Admin-Key`):
+
+```bash
+curl -X POST https://<domain>/devices/ESP32-01/commands \
+  -H "X-Admin-Key: <ADMIN_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"cmd":"interval","interval_s":30,"duration_min":60}'
+
+# cek status
+curl https://<domain>/devices/ESP32-01/commands -H "X-Admin-Key: <ADMIN_API_KEY>"
+```
+
+Atau langsung dari database (mis. DBeaver) — backend mengambil baris baru
+ini dalam ≤10 detik:
+
+```sql
+INSERT INTO device_commands (device_sn, cmd, interval_s, duration_min)
+VALUES ('ESP32-01', 'interval', 30, 60);
+
+INSERT INTO device_commands (device_sn, cmd, duration_s)
+VALUES ('ESP32-01', 'buzzer', 10);
+```
+
+Status di tabel `device_commands`: `pending` → `sent` → `applied` / `reset` /
+`rejected` (dibalas device), atau `invalid` (nilai di luar batas, tidak
+dikirim), `superseded` (digantikan perintah yang lebih baru untuk device yang
+sama), `expired` (tidak dibalas dalam 60 menit).
+
+Cara kerja pengiriman: perintah dipublish **retained** (QoS 1) dan diulang tiap
+2 menit sampai dibalas, karena lewat GSM device hanya tersambung ke broker saat
+mengirim telemetry (di mode SLEEP bisa 30 menit sekali). Begitu device
+subscribe lagi, broker langsung menyerahkan perintah terakhir; setelah dibalas
+atau kedaluwarsa, retained dihapus. Jadi perintah ke device yang sedang SLEEP
+bisa baru diterima sampai ±30 menit kemudian.
+
+Keterbatasan yang diketahui: semua device memakai satu kredensial MQTT bersama,
+jadi pemegang kredensial itu bisa memakai client id device lain (menyamar).
+Perbaikannya: username per device + ACL `%u`.
+
 ## Baca data (admin/dashboard)
 
 State terkini semua device:
@@ -163,7 +279,7 @@ pakai email/password, dapat JWT (`Authorization: Bearer <token>`, berlaku
 ```bash
 curl -X POST https://gps.jejakpintar.cloud/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "skripsi@tester.com", "password": "tester123"}'
+  -d '{"email": "skripsi@tester.com", "password": "<password akun>"}'
 # -> {"accessToken": "...", "tokenType": "bearer", "user": {...}}
 ```
 

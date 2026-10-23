@@ -56,3 +56,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Kredensial (jangan pernah di-commit): kunci API + akun tester untuk
+# --dart-define-from-file, dan secrets.h firmware. Contoh: secrets.example.*
+secrets.json
+firmware/**/secrets.h

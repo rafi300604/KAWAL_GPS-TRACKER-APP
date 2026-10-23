@@ -4,12 +4,14 @@ import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
 
-// Debug-only tester account, prefilled by the "Login Cepat" shortcut below.
+// Debug/profile-only tester account, prefilled by the "Login Cepat" shortcut below.
 // Must already exist in the backend's `users` table (seeded once server-side,
 // or created via the app's own "Buat Pengguna" admin screen) — this shortcut
 // does not create it.
-const String _kTesterEmail = 'skripsi@tester.com';
-const String _kTesterPassword = 'tester123';
+// Kredensial dibaca saat build dari secrets.json (--dart-define-from-file), bukan
+// ditulis di source code; kalau kosong, tombol Login Cepat tidak ditampilkan.
+const String _kTesterEmail = String.fromEnvironment('TESTER_EMAIL');
+const String _kTesterPassword = String.fromEnvironment('TESTER_PASSWORD');
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -154,7 +156,11 @@ class _LoginScreenState extends State<LoginScreen> {
                               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                           textAlign: TextAlign.center,
                         ),
-                        if (kDebugMode) ...[
+                        // Debug + profile (not release): profile builds are what
+                        // gets installed on the physical iPhone so the app can be
+                        // opened from the home screen (iOS 14+ blocks debug builds
+                        // launched outside Flutter tooling/Xcode).
+                        if (!kReleaseMode && _kTesterEmail != '' && _kTesterPassword != '') ...[
                           const SizedBox(height: 16),
                           const Divider(),
                           const SizedBox(height: 8),

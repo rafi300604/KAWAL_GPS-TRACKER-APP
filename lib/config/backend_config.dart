@@ -7,10 +7,13 @@
 /// tapi kalau backend dipakai lebih serius, tambahkan endpoint login/token
 /// bergantung sesi di server supaya admin key tidak perlu ada di client.
 class BackendConfig {
-  static const String host = 'gps.jejakpintar.cloud';
+  static const String host = 'mqttskripsigps.jejakpintar.cloud';
   static const String baseUrl = 'https://$host';
-  static const String deviceApiKey = 'krBixvn9dojknW2Lbj2rpDwuluEb61T/7D8V9HBanPM=';
-  static const String adminApiKey = 'RTw5GgM3B+EhOvQnqfovOJxyJ4oqf1H+N6ajWCJHhwU=';
+  // Kunci API TIDAK ditulis di source code: dibaca saat build dari secrets.json
+  // (di-.gitignore) lewat `--dart-define-from-file=secrets.json`. Contoh isi:
+  // secrets.example.json. Tanpa file itu, permintaan ke backend akan ditolak (401).
+  static const String deviceApiKey = String.fromEnvironment('DEVICE_API_KEY');
+  static const String adminApiKey = String.fromEnvironment('ADMIN_API_KEY');
 }
 
 /// Parse timestamp dari respons backend sebagai UTC secara eksplisit.

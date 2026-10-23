@@ -90,7 +90,9 @@ assets/icons/           App icons + splash logo (KAWAL branding)
 
 ```bash
 flutter pub get
-flutter run                 # picks a connected device/emulator/Chrome
+cp secrets.example.json secrets.json   # isi kunci API dari .env backend (lihat di bawah)
+flutter run --dart-define-from-file=secrets.json
+flutter build ios --profile --dart-define-from-file=secrets.json
 flutter test                 # run unit tests
 flutter analyze              # static analysis
 ```
@@ -98,14 +100,22 @@ flutter analyze              # static analysis
 For the backend, see [`backend/README.md`](backend/README.md) (Docker
 Compose setup, environment variables, full API reference including
 `/auth/login`, `/users`, and `/devices/{sn}/waypoints`). For the ESP32
-firmware contract, see [`FIRMWARE_CONTRACT.md`](FIRMWARE_CONTRACT.md).
+firmware contract, see [`FIRMWARE_CONTRACT.md`](FIRMWARE_CONTRACT.md); the firmware source itself is in
+[`firmware/`](firmware/README.md).
 
 ## Security note
 
-This is a thesis/demo project — `lib/config/backend_config.dart` has the
-backend's device/admin API keys embedded directly in the client for
-simplicity (device telemetry and device-read endpoints have no per-user
-auth scheme by design; see "Architecture" above). Login/users/waypoints
-*do* use proper per-user JWT auth. **Keep this repo private**, or replace
-the embedded static keys with build-time secrets (e.g. `--dart-define`)
-before making it public.
+No credentials are stored in this repository:
+
+- **App** — `lib/config/backend_config.dart` reads the backend's device/admin API keys at build time
+  (`String.fromEnvironment`) from `secrets.json`, passed with `--dart-define-from-file=secrets.json`.
+  `secrets.json` is git-ignored; copy `secrets.example.json` and fill in the values from the backend
+  `.env`. The optional `TESTER_EMAIL` / `TESTER_PASSWORD` entries enable the "Login Cepat" shortcut in
+  debug/profile builds only.
+- **Firmware** — `firmware/skripsi/secrets.h` (git-ignored) holds the MQTT and device credentials; see
+  `firmware/skripsi/secrets.example.h`.
+
+The admin key still ends up inside the built app binary (device-read endpoints have no per-user auth by
+design; see "Architecture" above), so do not distribute builds publicly. Login/users/waypoints use proper
+per-user JWT auth. Older commits contained a tester password that has since been changed and API keys of a retired
+server that is no longer used.

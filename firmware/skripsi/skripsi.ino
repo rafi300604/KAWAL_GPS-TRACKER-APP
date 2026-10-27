@@ -2108,7 +2108,7 @@ bool kirimKeBackendWiFiMQTT(const String& payloadHex) {
 // SENGAJA cuma menyalin pesan ke slot antrean - parsing, penerapan, dan
 // publish ack dilakukan di layaniPerintahMqtt() dari loop biasa, supaya
 // tidak publish/kirim AT command dari dalam callback library.
-#define CMD_INTERVAL_MIN_S     10
+#define CMD_INTERVAL_MIN_S     2      // 2 s = sama dengan interval rekam BiNavi (uji akurasi); sebelumnya 10
 #define CMD_INTERVAL_MAX_S     1800
 #define CMD_DURASI_MIN_MENIT   1
 #define CMD_DURASI_MAX_MENIT   180

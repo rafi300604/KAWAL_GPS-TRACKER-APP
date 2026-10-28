@@ -590,6 +590,11 @@ uint32_t utcEpochFromGps(const GpsData &d) {
 #define MPU_REG_GYRO_CONFIG   0x1B
 #define MPU_REG_ACCEL_XOUT_H  0x3B
 #define MPU_REG_GYRO_XOUT_H   0x43
+// Digital Low Pass Filter bawaan MPU6050 (register CONFIG, bit DLPF_CFG). Default pabrik = 0 (accel 260 Hz,
+// praktis tanpa filter). 4 = accel 21 Hz / gyro 20 Hz (delay ±8,5 ms): getaran cepat (mesin, benturan kecil)
+// diredam, sedangkan gerakan pengangkatan/pembongkaran (< 5 Hz) tetap lolos ke algoritma tamper.
+#define MPU_REG_CONFIG        0x1A
+#define MPU_DLPF_CFG          4
 #define BUZZER_PIN            23  // buzzer tamper - lihat bagian [MPU6050 TAMPER] di bawah
 
 // Ambang deviasi accel antar-bacaan (raw unit, ±2g -> 16384 LSB/g) untuk
@@ -669,6 +674,7 @@ void mpuSetup() {
   delay(50);
   mpuWrite(MPU_REG_ACCEL_CONFIG, 0x00);  // ±2g
   mpuWrite(MPU_REG_GYRO_CONFIG, 0x00);   // ±250 dps - dipakai tamperUpdate()
+  mpuWrite(MPU_REG_CONFIG, MPU_DLPF_CFG); // DLPF 21 Hz (lihat MPU_DLPF_CFG)
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);  // buzzer AKTIF (sudah punya osilator sendiri) - lihat catatan di BUZZER_FREQ_HZ
@@ -1181,10 +1187,13 @@ void pastikanGsmTersambung() {
   // WiFi sedang tersambung, cukup cek CEPAT apakah modem sudah terdaftar -
   // modem tetap mencari jaringan sendiri di background, dan gsmConnect()
   // baru dipanggil begitu terdaftar (tahap tunggu sinyalnya langsung lolos).
+  // Uji store-and-forward 2026-10-28: berlaku juga saat WiFi TIDAK ada -
+  // kalau tetap blocking 60 detik, loop() berhenti membaca GPS selama itu
+  // dan titik-titik di blank spot tidak sempat disimpan ke buffer sama sekali.
   static bool lewatiTungguSinyalDicetak = false;
-  if (strlen(config.ssid) > 0 && WiFi.status() == WL_CONNECTED && !modem.isNetworkConnected()) {
+  if (!modem.isNetworkConnected()) {
     if (!lewatiTungguSinyalDicetak) {
-      Serial.println("[GSM] Belum terdaftar di jaringan seluler - WiFi jadi jalur data, GSM dicek cepat berkala (tanpa blocking).");
+      Serial.println("[GSM] Belum terdaftar di jaringan seluler - data lewat WiFi atau disimpan di buffer, GSM dicek cepat berkala (tanpa blocking).");
       lewatiTungguSinyalDicetak = true;
     }
     lastGsmAttemptMillis = millis();
@@ -1463,6 +1472,7 @@ void delayLayaniPortal(unsigned long ms) {
   do {
     server.handleClient();
     layaniPerintahMqtt();  // pesan masuk cmd/<DEVICE_SN> - lihat [PERINTAH MQTT]
+    pantauJalurData();     // lihat [MONITOR JALUR]
     delay(10);
   } while (millis() - start < ms);
 }
@@ -2483,6 +2493,75 @@ void cekKoneksiMqttBerkala() {
 #endif
 }
 
+// ==========================================================
+// [MONITOR JALUR] Peralihan jalur & store-and-forward (2026-10-28)
+// ==========================================================
+// Sebelumnya alat baru sadar jalur data putus saat jadwal kirim berikutnya
+// (atau [MQTT-CEK] tiap 60 s), dan kalau GSM & WiFi sama-sama tidak ada,
+// cobaKirimDenganRetry() menunggu gsmConnect() 2x60 s sebelum titik
+// disimpan. Sekarang jalur dicek tiap 1 s - GSM (terdaftar di jaringan +
+// sesi data), WiFi (STA tersambung) - dan begitu berubah langsung pindah:
+// ke WiFi = sambung MQTT WiFi saat itu juga; tidak ada jalur = MODE SIMPAN
+// LOKAL (titik berikutnya langsung masuk buffer). Tiap perubahan dicetak
+// "[FAILOVER] <millis>" (diuji 28 Okt 2026: peralihan < 1 detik di ketiga
+// skenario - LTE->WiFi, WiFi->simpan lokal, LTE->simpan lokal).
+#define JALUR_CEK_MS  1000UL
+#define JALUR_GSM     0
+#define JALUR_WIFI    1
+#define JALUR_SIMPAN  2
+uint8_t       jalurAktif = JALUR_GSM;
+bool          jalurSudahDicek = false;
+unsigned long jalurCekTerakhirMillis = 0;
+
+const char* namaJalur(uint8_t j) {
+  return j == JALUR_GSM ? "GSM" : j == JALUR_WIFI ? "WIFI" : "SIMPAN-LOKAL";
+}
+
+void pantauJalurData() {
+  if (millis() - jalurCekTerakhirMillis < JALUR_CEK_MS) return;
+  jalurCekTerakhirMillis = millis();
+
+#if GSM_TRANSPORT_MQTT
+  // URC pesan masuk harus dibaca dulu - waitResponse() AT di bawah membuang URC yang tidak dikenalnya.
+  if (mqttSudahMulai && SerialAT.available()) modem.mqtt_handle(100);
+#endif
+  static bool selulerSebelumnya = true;
+  bool seluler = modem.isNetworkConnected();
+  if (!seluler) gsmRegistered = false;  // tidak terdaftar = sesi data tidak bisa dipakai
+  if (seluler && !selulerSebelumnya) {
+    lastGsmAttemptMillis = millis() - GSM_RECONNECT_COOLDOWN_MS;  // sinyal kembali - buka sesi data secepatnya
+  }
+  selulerSebelumnya = seluler;
+
+  static bool wifiSebelumnya = false;
+  bool wifiAda = strlen(config.ssid) > 0 && WiFi.status() == WL_CONNECTED;
+#if WIFI_TRANSPORT_MQTT
+  if (wifiSebelumnya && !wifiAda && mqttWifiConfigured) mqttWifiTlsClient.stop();  // socket TLS lama sudah mati
+#endif
+  wifiSebelumnya = wifiAda;
+
+  uint8_t baru = gsmRegistered ? JALUR_GSM : wifiAda ? JALUR_WIFI : JALUR_SIMPAN;
+  if (jalurSudahDicek && baru == jalurAktif) return;
+  uint8_t lama = jalurAktif;
+  bool pertama = !jalurSudahDicek;
+  jalurAktif = baru;
+  jalurSudahDicek = true;
+  if (pertama) {
+    Serial.printf("[FAILOVER] %lu jalur awal: %s\n", millis(), namaJalur(baru));
+  } else {
+    Serial.printf("[FAILOVER] %lu jalur %s -> %s\n", millis(), namaJalur(lama), namaJalur(baru));
+  }
+  if (baru == JALUR_WIFI) {
+#if WIFI_TRANSPORT_MQTT
+    bool ok = mqttWifiPastikanTersambung();
+    Serial.printf("[FAILOVER] %lu jalur WIFI %s\n", millis(), ok ? "SIAP (MQTT WiFi tersambung)" : "BELUM SIAP (MQTT WiFi gagal)");
+#endif
+  } else if (baru == JALUR_SIMPAN) {
+    Serial.printf("[FAILOVER] %lu MODE SIMPAN LOKAL aktif - titik berikutnya langsung ke buffer (%d/%d terisi)\n",
+                  millis(), bufferCount, MAX_BUFFERED_POINTS);
+  }
+}
+
 // Kirim lewat WiFi - endpoint & auth SAMA PERSIS dengan jalur GSM di atas.
 // TIDAK lagi sign-in Firebase Auth/tulis ke Firestore terpisah seperti
 // sebelumnya - itu bug nyata: data device kepecah ke DUA database berbeda
@@ -2684,6 +2763,15 @@ void cobaKirimDenganRetry(const GpsData &d, bool tamperAktif) {
   // POST /telemetry SELALU menimpa posisi "terkini" di tabel devices, jadi
   // titik live WAJIB jadi POST TERAKHIR supaya tidak ketimpa balik oleh
   // titik lama yang disusulkan sesudahnya.
+  // Tidak ada jalur sama sekali (lihat [MONITOR JALUR]) - langsung simpan,
+  // jangan habiskan 2x60 s menunggu sambung ulang yang hampir pasti gagal.
+  pantauJalurData();
+  if (jalurSudahDicek && jalurAktif == JALUR_SIMPAN) {
+    Serial.println("[Kirim] MODE SIMPAN LOKAL (tidak ada GSM/WiFi) - titik langsung disimpan di ESP32.");
+    statusSendOk = false;
+    simpanKeBuffer(d);
+    return;
+  }
   flushBufferedPoints();
 
   for (int percobaan = 1; percobaan <= KIRIM_MAX_RETRY; percobaan++) {
@@ -2695,7 +2783,7 @@ void cobaKirimDenganRetry(const GpsData &d, bool tamperAktif) {
     Serial.printf("[Kirim] Percobaan ke-%d/%d gagal.\n", percobaan, KIRIM_MAX_RETRY);
     if (percobaan < KIRIM_MAX_RETRY) {
       Serial.println("Mencoba sambungkan ulang SIM card / WiFi sebelum coba lagi...");
-      gsmRegistered = gsmConnect();
+      if (modem.isNetworkConnected()) gsmRegistered = gsmConnect();  // tanpa sinyal: jangan blocking 60 s
       pastikanWiFiTersambung();
       delay(2000);
     }
@@ -2855,6 +2943,7 @@ void cetakInfoAksesPortal() {
 
 void loop() {
   server.handleClient();
+  pantauJalurData();         // jalur data GSM/WiFi/simpan lokal - lihat [MONITOR JALUR]
   pastikanGsmTersambung();   // SIM card - prioritas utama untuk kirim data
   pastikanWiFiTersambung();  // WiFi lokal - selalu dijaga untuk akses portal (lihat komentar fungsi), TERLEPAS status GSM
 

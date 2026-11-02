@@ -1,7 +1,10 @@
 services:
   db:
+    container_name: kawal-gps-db
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5434:5432"
 
     # User/password/nama database SEMUA diambil dari .env (lewat ${VAR}).
     # Tidak ada nilai hardcode di sini.
@@ -11,22 +14,20 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
 
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - kawal_gps_db_data:/var/lib/postgresql/data
 
     networks:
-      - telemetry_internal
+      - kawal_gps_internal
 
     healthcheck:
-      # Sengaja TIDAK use "-d <db>" -- database aplikasi mungkin nanti
-      # disaexist (volume lama), dan kesehatan db cuma butuh server jalan.
-      # Database sendiri auto-creat oleh docker-entrypoint.sh sebelum migrasi.
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      # Menggunakan -d postgres agar tidak default mencari database dengan nama user
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   api:
-    container_name: telemetry-apigps
+    container_name: kawal-gps-api
     ports:
       - "127.0.0.1:8555:8000"
     build: .
@@ -37,22 +38,59 @@ services:
       db:
         condition: service_healthy
 
-    # DATABASE_URL dibangun dari variabel .env -- bukan nilai hardcode.
+    # DATABASE_URL dibangun dari variabel .env -- dengan fallback individual env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Pakai nama kontainer yang unik, BUKAN alias service "db": pada network
+      # bersama devops_proxy ada container lain (gameaksara_postgres) yang juga
+      # beralias "db", sehingga host "db" bisa ter-resolve ke Postgres yang salah.
+      POSTGRES_HOST: kawal-gps-db
+      POSTGRES_PORT: "5432"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@kawal-gps-db:5432/${POSTGRES_DB}
       DEVICE_API_KEY: ${DEVICE_API_KEY}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
+
+      # --- MQTT (jalur GSM/seluler hemat kuota, lihat app/gps_mqtt_client.py)
+      # Backend konek ke listener INTERNAL broker (port 1883, anonymous,
+      # tanpa TLS -- aman karena dibatasi network Docker, bukan port
+      # publik), BUKAN listener publik 8883 yang dipakai device eksternal
+      # (itu pakai TLS cert self-signed yang subscriber ini tidak perlu
+      # verifikasi). ---
+      GPS_MQTT_BROKER: ${GPS_MQTT_BROKER:-mqtt}
+      GPS_MQTT_PORT: ${GPS_MQTT_INTERNAL_PORT:-1883}
+      GPS_MQTT_TLS: "false"
+      GPS_MQTT_CLIENT_ID: ${GPS_MQTT_CLIENT_ID:-kawal-gps-backend-sub}
 
     expose:
       - "8000"
 
     networks:
-      - telemetry_internal
+      - kawal_gps_internal
       - devops_proxy
 
+  mqtt:
+    container_name: kawal-gps-mqtt
+    # Dikunci ke versi yang sudah diuji (ACL + per_listener_settings), supaya
+    # pull/redeploy tidak diam-diam mengganti perilaku broker.
+    image: eclipse-mosquitto:2.1.2-alpine
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    volumes:
+      # Seluruh folder config (mosquitto.conf, passwd, acl, certs/) dipasang
+      # sekaligus, supaya file baru seperti `acl` cukup ditaruh di folder ini
+      # di VPS tanpa mengubah compose lagi.
+      - ${MQTT_CONFIG_DIR:-/opt/kawal-gps/mqtt/config}:/mosquitto/config:ro
+      - kawal_gps_mosquitto_data:/mosquitto/data
+      - kawal_gps_mosquitto_log:/mosquitto/log
+    networks:
+      - kawal_gps_internal
+
 networks:
-  telemetry_internal:
+  kawal_gps_internal:
     driver: bridge
 
   devops_proxy:
@@ -60,4 +98,6 @@ networks:
     name: devops_default
 
 volumes:
-  db_data:
+  kawal_gps_db_data:
+  kawal_gps_mosquitto_data:
+  kawal_gps_mosquitto_log:

@@ -21,22 +21,34 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# DATABASE_URL datang dari .env (di-inject docker compose ke container) --
-# no hardcode, dan kalau belum diset langsung fail dengan pesan jelas.
-DATABASE_URL = os.getenv("DATABASE_URL")
+# DATABASE_URL datang dari .env (di-inject docker compose ke container)
+from urllib.parse import quote_plus
+
+user = os.getenv("POSTGRES_USER")
+password = os.getenv("POSTGRES_PASSWORD")
+dbname = os.getenv("POSTGRES_DB")
+host = os.getenv("POSTGRES_HOST", "db")
+port = os.getenv("POSTGRES_PORT", "5432")
+
+if user and password and dbname:
+    DATABASE_URL = f"postgresql+asyncpg://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{dbname}"
+else:
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL belum diset -- harus diambil dari .env. "
         "Salin .env.example jadi .env, isi nilainya, lalu jalankan lewat "
         "'docker compose up' (compose inject DATABASE_URL ke container)."
     )
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+# configparser di alembic butuh %% untuk escape karakter % dari URL-encoding (misal %23 dari tanda #)
+config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -52,9 +64,10 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    connectable = create_async_engine(
+        DATABASE_URL,
         poolclass=pool.NullPool,
     )
 

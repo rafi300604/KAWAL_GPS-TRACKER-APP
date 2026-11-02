@@ -6,3 +6,4 @@ pydantic==2.9.2
 alembic==1.13.3
 bcrypt==4.2.0
 pyjwt==2.9.0
+paho-mqtt==2.1.0

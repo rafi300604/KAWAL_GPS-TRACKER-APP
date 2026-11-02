@@ -5,6 +5,10 @@ telemetry lewat MQTT (GSM atau WiFi) ke broker backend, deteksi tamper (MPU6050 
 perintah server lewat topic `cmd/<SN>` (interval, reset, buzzer, test_tamper). Kontrak data: lihat
 `../FIRMWARE_CONTRACT.md`.
 
+Status koneksi: setiap selesai connect alat publish `online` ke `status/<SN>` dan memasang Last Will `offline`
+di topic yang sama (keepalive GSM 30 s), jadi dashboard tahu kalau daya alat dicabut. Broker wajib punya baris ACL
+`pattern write status/%c` - tanpa itu broker menolak koneksi alat yang memasang Will.
+
 ## Kredensial
 
 Kredensial (`DEVICE_API_KEY`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `AP_PASSWORD`) **tidak** ada di repo.

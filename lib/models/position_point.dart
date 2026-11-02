@@ -9,6 +9,7 @@ class PositionPoint {
   final DateTime timestamp;
   final String? powerSource;
   final String? dataSource;
+  final bool tamper;
 
   const PositionPoint({
     required this.id,
@@ -19,6 +20,7 @@ class PositionPoint {
     required this.timestamp,
     this.powerSource,
     this.dataSource,
+    this.tamper = false,
   });
 
   /// Dari respons backend FastAPI (`GET /telemetry/{sn}/history`) — lihat
@@ -35,6 +37,7 @@ class PositionPoint {
           : DateTime.now(),
       powerSource: json['powerSource'] as String?,
       dataSource: json['dataSource'] as String?,
+      tamper: json['tamper'] as bool? ?? false,
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../models/position_point.dart';
 import '../../utils/formatters.dart';
+import 'pressable_scale.dart';
 
 /// Inline playback toolbar for tracking history — mirrors the reference
 /// app's slider + "Waktu"/"Titik ke-" meta + play/pause/replay/cancel
@@ -70,27 +71,54 @@ class TrackingToolbar extends StatelessWidget {
                       'Titik ke-${sliderIndex + 1} / ${points.length}',
                       style: theme.textTheme.bodySmall,
                     ),
+                    Text(
+                      // knot -> km/jam, sama seperti VesselInfoPanel &
+                      // export Excel - satu konversi/format dipakai di
+                      // semua tempat biar angkanya selalu konsisten.
+                      'Kecepatan: ${current != null ? (current.speedKnots * 1.852).toStringAsFixed(1) : '-'} km/jam',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    if (current != null && current.tamper)
+                      Text(
+                        '⚠ Tamper terdeteksi',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: Colors.red, fontWeight: FontWeight.bold),
+                      ),
                   ],
                 ),
               ),
-              IconButton(
-                tooltip: 'Batalkan slider',
-                icon: const Icon(Icons.close),
-                onPressed: onCancel,
-              ),
-              if (playbackComplete)
-                IconButton(
-                  tooltip: 'Putar ulang',
-                  icon: const Icon(Icons.replay),
-                  onPressed: onRewatch,
-                )
-              else
-                IconButton(
-                  tooltip: autoPlaying ? 'Jeda' : 'Putar',
-                  icon: Icon(autoPlaying ? Icons.pause_circle : Icons.play_circle),
-                  iconSize: 30,
-                  onPressed: autoPlaying ? onPause : onPlay,
+              PressableScale(
+                child: IconButton(
+                  tooltip: 'Batalkan slider',
+                  icon: const Icon(Icons.close),
+                  onPressed: onCancel,
                 ),
+              ),
+              PressableScale(
+                child: playbackComplete
+                    ? IconButton(
+                        tooltip: 'Putar ulang',
+                        icon: const Icon(Icons.replay),
+                        onPressed: onRewatch,
+                      )
+                    : IconButton(
+                        tooltip: autoPlaying ? 'Jeda' : 'Putar',
+                        // AnimatedSwitcher - ikon play/jeda berganti dengan
+                        // fade+scale halus, bukan langsung "lompat" ganti
+                        // begitu autoplay di-toggle.
+                        icon: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 180),
+                          transitionBuilder: (child, anim) =>
+                              ScaleTransition(scale: anim, child: child),
+                          child: Icon(
+                            autoPlaying ? Icons.pause_circle : Icons.play_circle,
+                            key: ValueKey(autoPlaying),
+                          ),
+                        ),
+                        iconSize: 30,
+                        onPressed: autoPlaying ? onPause : onPlay,
+                      ),
+              ),
             ],
           ),
         ],

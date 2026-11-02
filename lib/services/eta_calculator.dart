@@ -91,20 +91,38 @@ EtaResult computeEta({
   );
 }
 
+// Jalan sungguhan hampir tidak pernah lurus sempurna - jarak garis lurus
+// (haversine) SELALU lebih pendek dari jarak jalan sungguhan. Faktor "detour"
+// ini (dikalikan ke jarak garis lurus) adalah perkiraan kasar jarak jalan
+// kota pada umumnya, dipakai cuma di fallback ini (saat OSRM tidak
+// terjangkau/tidak ketemu rute) supaya jarak & ETA-nya tidak jauh lebih
+// optimis dibanding kalau rute jalan sungguhan berhasil didapat.
+const double _kStraightLineDetourFactor = 1.3;
+
+// Kecepatan rata-rata mobil di jalan kota Indonesia (memperhitungkan lampu
+// merah/kemacetan/belokan, BUKAN kecepatan maksimal jalan bebas hambatan) -
+// dipakai sebagai pembagi ETA di fallback ini. SENGAJA bukan kecepatan GPS
+// device SAAT INI ([DeviceVessel.speedKnots]) - kecepatan instan itu BUKAN
+// prediktor yang baik buat kecepatan rata-rata SISA perjalanan (bisa 0 kalau
+// device sedang berhenti, atau tinggi kalau kebetulan lagi di jalan lurus
+// sebentar) - itu salah satu penyebab ETA sebelumnya kelihatan "terlalu
+// cepat".
+const double _kFallbackAverageSpeedKmh = 25.0;
+
 /// Straight-line (haversine) distance/ETA in km, used only as a fallback when
-/// the road-routing service (OSRM) is unreachable or finds no route —
-/// [speedKnots] is converted to km/h (1 knot = 1.852 km/h).
+/// the road-routing service (OSRM) is unreachable or finds no route. Applies
+/// [_kStraightLineDetourFactor] to the raw distance and divides by
+/// [_kFallbackAverageSpeedKmh] (a fixed realistic urban average, not the
+/// vessel's live GPS speed) — see constants above for why.
 EtaResult computeStraightLineEtaKm({
   required double fromLat,
   required double fromLng,
   required double toLat,
   required double toLng,
-  required double speedKnots,
   DateTime? now,
 }) {
-  final distanceKm = computeDistanceKm(fromLat, fromLng, toLat, toLng);
-  final speedKmh = speedKnots * 1.852;
-  final hours = speedKmh > 0 ? distanceKm / speedKmh : double.infinity;
+  final distanceKm = computeDistanceKm(fromLat, fromLng, toLat, toLng) * _kStraightLineDetourFactor;
+  final hours = distanceKm / _kFallbackAverageSpeedKmh;
   final arrival =
       hours.isFinite ? (now ?? DateTime.now()).add(Duration(seconds: (hours * 3600).round())) : null;
   return EtaResult(

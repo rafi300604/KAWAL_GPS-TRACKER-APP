@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../../services/eta_calculator.dart';
+import '../../models/place_result.dart';
+import '../../services/geocoding_service.dart';
 
 class WaypointDraft {
   final String name;
@@ -17,52 +20,78 @@ class AddWaypointDialog extends StatefulWidget {
   State<AddWaypointDialog> createState() => _AddWaypointDialogState();
 }
 
-class _AddWaypointDialogState extends State<AddWaypointDialog>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
-  final _formKeyDecimal = GlobalKey<FormState>();
-  final _formKeyDms = GlobalKey<FormState>();
+class _AddWaypointDialogState extends State<AddWaypointDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _geocodingService = GeocodingService();
 
   final _nameController = TextEditingController();
   final _latController = TextEditingController();
   final _lngController = TextEditingController();
+  final _searchController = TextEditingController();
 
-  final _dmsNameController = TextEditingController();
-  final _latDegController = TextEditingController();
-  final _latMinController = TextEditingController();
-  final _latSecController = TextEditingController();
-  String _latDir = 'N';
-  final _lngDegController = TextEditingController();
-  final _lngMinController = TextEditingController();
-  final _lngSecController = TextEditingController();
-  String _lngDir = 'E';
+  // Debounce pencarian nama tempat - Nominatim (geocoder OpenStreetMap
+  // gratis yang dipakai di sini, lihat GeocodingService) mewajibkan maksimal
+  // ~1 request/detik; nunggu user berhenti ngetik dulu (400ms) sebelum
+  // benar-benar query juga sekalian menghindari flood request per-huruf
+  // yang sama sekali tidak perlu.
+  Timer? _debounce;
+  List<PlaceResult> _results = [];
+  bool _searching = false;
+  String? _searchError;
 
   String? _error;
 
   @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-  }
-
-  @override
   void dispose() {
-    _tabController.dispose();
+    _debounce?.cancel();
     _nameController.dispose();
     _latController.dispose();
     _lngController.dispose();
-    _dmsNameController.dispose();
-    _latDegController.dispose();
-    _latMinController.dispose();
-    _latSecController.dispose();
-    _lngDegController.dispose();
-    _lngMinController.dispose();
-    _lngSecController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
-  void _submitDecimal() {
-    if (!_formKeyDecimal.currentState!.validate()) return;
+  void _onSearchChanged(String query) {
+    _debounce?.cancel();
+    if (query.trim().isEmpty) {
+      setState(() {
+        _results = [];
+        _searching = false;
+        _searchError = null;
+      });
+      return;
+    }
+    setState(() => _searching = true);
+    _debounce = Timer(const Duration(milliseconds: 400), () async {
+      final results = await _geocodingService.search(query);
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _searching = false;
+        _searchError = results.isEmpty ? 'Tempat tidak ditemukan' : null;
+      });
+    });
+  }
+
+  void _pickResult(PlaceResult result) {
+    setState(() {
+      _latController.text = result.lat.toStringAsFixed(6);
+      _lngController.text = result.lng.toStringAsFixed(6);
+      // Nama waypoint diisi dari potongan pertama display_name (mis.
+      // "Monas, RT.5/RW.2, Gambir, ..." -> "Monas") cuma kalau user BELUM
+      // mengetik nama sendiri - supaya tidak menimpa nama yang sudah
+      // sengaja diisi manual.
+      if (_nameController.text.trim().isEmpty) {
+        _nameController.text = result.displayName.split(',').first.trim();
+      }
+      _searchController.text = result.displayName;
+      _results = [];
+      _searchError = null;
+    });
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
     final lat = double.parse(_latController.text);
     final lng = double.parse(_lngController.text);
     if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
@@ -76,64 +105,118 @@ class _AddWaypointDialogState extends State<AddWaypointDialog>
     ));
   }
 
-  void _submitDms() {
-    if (!_formKeyDms.currentState!.validate()) return;
-    try {
-      final lat = convertDmsToDecimal(
-        degrees: int.parse(_latDegController.text),
-        minutes: int.parse(_latMinController.text),
-        seconds: double.parse(_latSecController.text.isEmpty ? '0' : _latSecController.text),
-        direction: _latDir,
-      );
-      final lng = convertDmsToDecimal(
-        degrees: int.parse(_lngDegController.text),
-        minutes: int.parse(_lngMinController.text),
-        seconds: double.parse(_lngSecController.text.isEmpty ? '0' : _lngSecController.text),
-        direction: _lngDir,
-      );
-      Navigator.of(context).pop(WaypointDraft(
-        name: _dmsNameController.text.trim(),
-        lat: lat,
-        lng: lng,
-      ));
-    } on FormatException catch (e) {
-      setState(() => _error = e.message);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return AlertDialog(
       title: const Text('Tambah Waypoint'),
       content: SizedBox(
         width: 380,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TabBar(
-              controller: _tabController,
-              tabs: const [
-                Tab(text: 'Desimal'),
-                Tab(text: 'DMS'),
-              ],
-              onTap: (_) => setState(() => _error = null),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 260,
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  _buildDecimalForm(),
-                  _buildDmsForm(),
-                ],
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  labelText: 'Cari nama tempat',
+                  hintText: 'mis. Monas, Stasiun Gambir, ...',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searching
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : (_searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() {
+                                  _results = [];
+                                  _searchError = null;
+                                });
+                              },
+                            )
+                          : null),
+                ),
+                onChanged: _onSearchChanged,
               ),
-            ),
-            if (_error != null) ...[
+              // Hasil pencarian - list pendek (maks 5 dari GeocodingService)
+              // langsung di bawah field, bukan overlay/dropdown terpisah,
+              // supaya tetap sederhana di dalam dialog yang space-nya
+              // terbatas. Tap satu hasil langsung isi lat/lng (+ nama kalau
+              // masih kosong) - koordinat TETAP bisa diedit manual
+              // sesudahnya lewat field Latitude/Longitude di bawah, hasil
+              // pencarian cuma starting point, bukan satu-satunya cara isi.
+              if (_results.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    itemCount: _results.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, i) {
+                      final r = _results[i];
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.place_outlined),
+                        title: Text(r.displayName, maxLines: 2, overflow: TextOverflow.ellipsis),
+                        onTap: () => _pickResult(r),
+                      );
+                    },
+                  ),
+                ),
+              if (_searchError != null) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(_searchError!,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.error)),
+                ),
+              ],
+              const SizedBox(height: 16),
+              const Align(alignment: Alignment.centerLeft, child: Text('Atau isi manual:')),
               const SizedBox(height: 8),
-              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(labelText: 'Nama Waypoint'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _latController,
+                keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+                decoration: const InputDecoration(labelText: 'Latitude'),
+                validator: (v) =>
+                    double.tryParse(v ?? '') == null ? 'Angka tidak valid' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _lngController,
+                keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+                decoration: const InputDecoration(labelText: 'Longitude'),
+                validator: (v) =>
+                    double.tryParse(v ?? '') == null ? 'Angka tidak valid' : null,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [
@@ -142,112 +225,8 @@ class _AddWaypointDialogState extends State<AddWaypointDialog>
           child: const Text('Batal'),
         ),
         FilledButton(
-          onPressed: () =>
-              _tabController.index == 0 ? _submitDecimal() : _submitDms(),
+          onPressed: _submit,
           child: const Text('Simpan'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDecimalForm() {
-    return Form(
-      key: _formKeyDecimal,
-      child: Column(
-        children: [
-          TextFormField(
-            controller: _nameController,
-            decoration: const InputDecoration(labelText: 'Nama Waypoint'),
-            validator: (v) => (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _latController,
-            keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-            decoration: const InputDecoration(labelText: 'Latitude'),
-            validator: (v) =>
-                double.tryParse(v ?? '') == null ? 'Angka tidak valid' : null,
-          ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _lngController,
-            keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-            decoration: const InputDecoration(labelText: 'Longitude'),
-            validator: (v) =>
-                double.tryParse(v ?? '') == null ? 'Angka tidak valid' : null,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDmsForm() {
-    return Form(
-      key: _formKeyDms,
-      child: SingleChildScrollView(
-        child: Column(
-          children: [
-            TextFormField(
-              controller: _dmsNameController,
-              decoration: const InputDecoration(labelText: 'Nama Waypoint'),
-              validator: (v) => (v == null || v.trim().isEmpty) ? 'Wajib diisi' : null,
-            ),
-            const SizedBox(height: 12),
-            _dmsRow('Lat', _latDegController, _latMinController, _latSecController,
-                _latDir, ['N', 'S'], (v) => setState(() => _latDir = v!)),
-            const SizedBox(height: 12),
-            _dmsRow('Lng', _lngDegController, _lngMinController, _lngSecController,
-                _lngDir, ['E', 'W'], (v) => setState(() => _lngDir = v!)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _dmsRow(
-    String label,
-    TextEditingController deg,
-    TextEditingController min,
-    TextEditingController sec,
-    String dir,
-    List<String> dirOptions,
-    ValueChanged<String?> onDirChanged,
-  ) {
-    return Row(
-      children: [
-        SizedBox(width: 32, child: Text(label)),
-        Expanded(
-          child: TextFormField(
-            controller: deg,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: '°'),
-            validator: (v) => int.tryParse(v ?? '') == null ? '?' : null,
-          ),
-        ),
-        const SizedBox(width: 4),
-        Expanded(
-          child: TextFormField(
-            controller: min,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: "'"),
-            validator: (v) => int.tryParse(v ?? '') == null ? '?' : null,
-          ),
-        ),
-        const SizedBox(width: 4),
-        Expanded(
-          child: TextFormField(
-            controller: sec,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: '"'),
-          ),
-        ),
-        const SizedBox(width: 4),
-        DropdownButton<String>(
-          value: dir,
-          items: dirOptions
-              .map((d) => DropdownMenuItem(value: d, child: Text(d)))
-              .toList(),
-          onChanged: onDirChanged,
         ),
       ],
     );

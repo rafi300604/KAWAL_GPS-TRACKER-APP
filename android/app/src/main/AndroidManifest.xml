@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Wajib untuk akses backend (HTTPS) di HP Android sungguhan - web/desktop
+         tidak butuh ini jadi bug-nya tidak kelihatan sampai di-install di HP. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="KAWAL"
         android:name="${applicationName}"

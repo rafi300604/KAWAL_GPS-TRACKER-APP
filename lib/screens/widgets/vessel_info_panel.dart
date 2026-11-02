@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../models/device_alert.dart';
 import '../../models/device_vessel.dart';
+import '../../services/device_service.dart';
 import '../../utils/compass.dart';
 import '../../utils/formatters.dart';
 import '../../utils/time_ago.dart';
+import 'alert_history_dialog.dart';
 import 'panel_header.dart';
 
 /// Floating "Panel Informasi Kapal" — mirrors the reference app's
@@ -16,9 +19,15 @@ import 'panel_header.dart';
 /// just hide this one card.
 class VesselInfoPanel extends StatefulWidget {
   final DeviceVessel vessel;
+  final DeviceService deviceService;
   final VoidCallback onClose;
 
-  const VesselInfoPanel({super.key, required this.vessel, required this.onClose});
+  const VesselInfoPanel({
+    super.key,
+    required this.vessel,
+    required this.deviceService,
+    required this.onClose,
+  });
 
   @override
   State<VesselInfoPanel> createState() => _VesselInfoPanelState();
@@ -81,6 +90,19 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  IconButton(
+                    tooltip: 'Riwayat Notifikasi',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.notifications_outlined),
+                    onPressed: () => showDialog(
+                      context: context,
+                      builder: (_) => AlertHistoryDialog(
+                        deviceService: widget.deviceService,
+                        deviceSn: v.sn,
+                        deviceName: v.name,
+                      ),
+                    ),
+                  ),
                   Container(
                     width: 10,
                     height: 10,
@@ -90,7 +112,8 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
                     ),
                   ),
                   const SizedBox(width: 6),
-                  Text(v.isActive ? 'Aktif' : 'Tidak Aktif', style: theme.textTheme.bodySmall),
+                  Text(v.isOffline ? 'Offline' : (v.isActive ? 'Aktif' : 'Tidak Aktif'),
+                      style: theme.textTheme.bodySmall),
                 ],
               ),
             ),
@@ -119,7 +142,32 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
             if (v.dataSource == 'WIFI' && v.ipv4 != null)
               _infoRow(context, Icons.lan_outlined, 'IPv4', v.ipv4!),
             _infoRow(context, Icons.schedule_outlined, 'Update Terakhir',
-                formatDeltaFromNow(v.lastTransmittedAt)),
+                '${dateTimeFormat.format(v.lastTransmittedAt)}\n(${formatDeltaFromNow(v.lastTransmittedAt)})'),
+            // Waktu tamper TERAKHIR (bukan status "sedang diusik" - lihat
+            // catatan di home_screen.dart soal kenapa tidak ada status
+            // persisten) - dihitung dari alert type='tamper' PALING BARU di
+            // stream yang sama dengan AlertHistoryDialog, supaya tidak perlu
+            // endpoint/field backend baru.
+            StreamBuilder<List<DeviceAlert>>(
+              stream: widget.deviceService.watchAlerts(v.sn),
+              builder: (context, snapshot) {
+                final tamperAlerts =
+                    (snapshot.data ?? const <DeviceAlert>[]).where((a) => a.type == 'tamper');
+                if (tamperAlerts.isEmpty) {
+                  return _infoRow(
+                      context, Icons.warning_amber_outlined, 'Terakhir Diusik', 'Belum pernah');
+                }
+                final latest =
+                    tamperAlerts.reduce((a, b) => a.createdAt.isAfter(b.createdAt) ? a : b);
+                return _infoRow(
+                  context,
+                  Icons.warning_amber_outlined,
+                  'Terakhir Diusik',
+                  '${formatWib(latest.createdAt)}\n(${formatDeltaFromNow(latest.createdAt)})',
+                  valueColor: Colors.red,
+                );
+              },
+            ),
           ],
         ),
       ),

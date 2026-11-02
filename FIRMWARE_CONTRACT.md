@@ -1,5 +1,138 @@
 # ESP32 ↔ Backend Contract
 
+## ✅ STATUS PER 2026-10-03 — DOMAIN & REPO BARU, SEMUA FITUR DI BAWAH SUDAH LIVE
+
+Backend pindah dari `gps.jejakpintar.cloud` (fork `ghamiDev/Rafi.git`, co-hosting
+project BLE-scan temen) ke domain+repo baru SENDIRI: **`https://mqttskripsigps.jejakpintar.cloud`**,
+kode di `https://github.com/rafi300604/kawal-gps-backend` (private, milik Rafi
+sendiri). Alasan pindah: nambah broker MQTT di stack lama bentrok sama
+`mosquitto.conf` punya project BLE-scan, bikin production down total — jadi
+dipisah total (repo, container/stack, domain) biar tidak saling ganggu lagi.
+
+Firmware (`skripsi.ino`, `BACKEND_HOST`) dan app (`lib/config/backend_config.dart`)
+SUDAH dua-duanya mengarah ke domain baru ini — tidak perlu diubah lagi.
+Sempat ada downtime (domain resolve tapi server tidak merespons sama sekali,
+bukan 502) sambil nunggu Mas Fifit setup stack Portainer baru; **dikonfirmasi
+LIVE lagi per 2026-10-03** setelah perubahan port internal di sisi VPS ("port
+diubah ke 8555") - dites langsung: `/health` -> `200`, `/devices` -> `200`
+(device `ESP32-01` muncul dengan field `tamper`), `POST /telemetry` format
+`d` -> `200` dan ter-decode benar. **Kedua banner di bawah ("BELUM DI-DEPLOY
+KE PRODUCTION") SUDAH RESOLVED** - format `d` DAN bit3 tamper dua-duanya
+sudah live & terverifikasi di production (bukan cuma di repo lokal lagi).
+
+Kalau backend sempat tidak merespons lagi di masa depan, cek dulu
+`curl https://mqttskripsigps.jejakpintar.cloud/health` sebelum asumsi kode
+backend yang salah - riwayatnya selalu soal infra VPS (routing/port/stack),
+bukan bug di `backend/`.
+
+---
+
+## ⚠️ PERUBAHAN WIRE FORMAT PER 2026-09-15 — [RESOLVED 2026-10-03, lihat banner di atas]
+
+Firmware (`skripsi.ino`) sudah diubah untuk kirim payload jauh lebih ringkas
+(hemat kuota data seluler ~44% per kiriman: 315→176 byte termasuk header),
+menggantikan seluruh field JSON lama (`lat`/`lng`/`heading`/`speedKnots`/
+`timestamp`/`dataSource`/`powerSource`/`name`) dengan SATU field biner
+ter-hex-encode. **Belum di-upload ke board fisik.**
+
+Status decode di backend: `TelemetryIn` (`backend/app/schemas.py`) dan
+`ingest_telemetry()` (`backend/app/main.py`) SUDAH mendukung field `d` ini
+(fungsi `_decode_compact_telemetry()`), sekaligus tetap menerima format
+lama field-per-field (dipilih otomatis: kalau `d` ada dipakai, kalau tidak
+fallback ke lat/lng/dst lama) supaya curl/Postman/tooling lama di dokumen
+ini tidak langsung rusak. **Tapi backend production di VPS
+(`gps.jejakpintar.cloud`) menjalankan kode dari fork terpisah (repo
+kolaborator, ada tambahan MQTT/BLE-scan yang tidak ada di repo ini) — jadi
+perubahan decode ini BELUM otomatis ada di production.** Sebelum firmware
+ini di-upload ke board fisik, pastikan dulu decode `d` sudah benar-benar
+jalan di `gps.jejakpintar.cloud` (bisa dites: POST `/telemetry` dengan body
+`{"sn": "TEST-XXX", "d": "..."}` dan `X-API-Key` asli, harus balik `200`
+bukan `400`/`422`), bukan cuma di repo lokal ini.
+
+Body baru:
+```json
+{"sn": "ESP32-01", "d": "ffa16540065da380002d03526aa91aa400"}
+```
+(contoh di atas decode ke lat=-6.2, lng=106.8, heading=45°, speedKnots=8.5,
+timestamp=2026-09-15T10:15:00Z, flags=0 -> dataSource "GSM", powerSource
+"BATTERY" -- diverifikasi round-trip lewat `_decode_compact_telemetry()` di
+`backend/app/main.py`. Contoh SEBELUMNYA di draf ini, `fffce3f8...d7a301`,
+ternyata 35 karakter/ganjil -- tidak valid untuk 17 byte, kemungkinan typo
+saat digenerate -- sudah diganti.)
+
+Field `d` = 17 byte biner (big-endian) di-hex-encode jadi 34 karakter:
+
+| Byte | Isi | Tipe | Catatan |
+|---|---|---|---|
+| 0-3 | lat | int32 | nilai asli = int32 / 1.000.000 |
+| 4-7 | lng | int32 | nilai asli = int32 / 1.000.000 |
+| 8-9 | heading | uint16 | derajat 0-359 langsung |
+| 10-11 | speedKnots | uint16 | nilai asli = uint16 / 100 |
+| 12-15 | timestamp | uint32 | UNIX epoch UTC (detik) |
+| 16 | flags | uint8 | bit0: dataSource (0=GSM,1=WIFI); bit1: quota_warning (1=kuota diduga habis, cuma valid kalau bit0=1); bit2: powerSource (0=BATTERY,1=AKI); bit3: tamper (1=alarm tamper aktif SAAT titik ini, HANYA untuk titik live -- lihat bagian tamper di bawah); bit4: tamper_test (1=titik tamper hasil perintah server `test_tamper`, simulasi -- cuma valid bersama bit3=1; backend memberi alert-nya awalan `[UJI]`); bit5-7: cadangan (harus 0) |
+
+**Kenapa BUKAN hex-dari-JSON-utuh, dan bukan raw binary `application/octet-stream`
+juga**: dianalisis dari referensi `vms_u30gt_iridium_final.ino` (tracker
+satelit Iridium) — di situ hex CUMA representasi String sementara di dalam
+kode, data yang benar-benar dikirim ke modem tetap byte mentah. Karena kita
+pakai HTTP (bukan AT+SBDWB ke modem satelit), raw binary sebenarnya lebih
+hemat lagi (tidak ada penggandaan 2x dari hex) — tapi hex-di-dalam-JSON
+dipilih supaya: (1) tetap gampang di-debug pakai curl/Postman/log server
+seperti kontrak lama (raw binary body susah dibaca manusia), (2) perubahan
+di backend minimal (endpoint tetap terima JSON, cuma field-nya beda, tidak
+perlu ganti Content-Type/parsing dari nol). `sn` tetap teks biasa di luar
+blob hex (supaya backend bisa routing/cari device tanpa decode dulu
+sekalipun devicenya belum dikenal). `name` sengaja TIDAK dikirim lagi tiap
+kali (jarang berubah saat runtime) — backend HARUS pertahankan nilai `name`
+lama di tabel `devices` kalau field ini tidak ada di payload (perilaku ini
+SUDAH ADA: `if payload.name is not None`, tinggal pastikan tetap begitu).
+
+**[RESOLVED 2026-10-03 — lihat banner status di atas, sudah live di production]**
+Yang sudah dikerjakan di backend: `TelemetryIn.d` (opsional, hex string) ditambah di
+`schemas.py`; `ingest_telemetry()` decode `d` lewat
+`_decode_compact_telemetry()` KALAU field itu ada (kalau tidak, fallback ke
+lat/lng/dst lama, dengan validasi manual field wajib supaya tetap balas
+`400` yang jelas, bukan `422` generik), lalu lanjut ke logic
+`ingest_telemetry()` yang SUDAH ADA tanpa perubahan lain (Postgres schema,
+alert kuota, Excel export app — semua tetap jalan seperti biasa karena
+cuma titik masuk parsing-nya yang berubah, bukan data yang tersimpan).
+Sudah dites: schema Pydantic menerima kedua format, dan
+`_decode_compact_telemetry()` di-round-trip-test manual (lihat contoh hex
+di atas). **Belum dites lewat HTTP end-to-end** (server FastAPI beneran)
+karena tidak bisa build image Docker lokal (masalah jaringan Docker
+Desktop saat sesi ini), dan belum di-deploy ke production VPS.
+
+Kontrak field-per-field LAMA di bawah ini (bagian 1) masih berlaku sebagai
+ACUAN MAKNA tiap field (lat/lng/heading/dst) — cuma cara pengemasannya di
+wire yang berubah jadi biner+hex di atas.
+
+### Tamper (bit3) — status implementasi per 2026-09-21
+
+Firmware kirim bit3=1 kalau alarm tamper (guncangan MPU6050) sedang aktif
+SAAT titik itu direkam, HANYA untuk titik live (titik susulan dari buffer
+offline selalu bit3=0 — supaya titik lama tidak salah ditandai "diusik").
+Begitu alarm baru menyala (rising edge), firmware langsung paksa kirim
+`/telemetry` saat itu juga, tidak menunggu interval transmisi biasa.
+
+**[RESOLVED 2026-10-03 — lihat banner status di atas, sudah live di production]**
+Backend:
+- `Telemetry.tamper` (kolom baru, `models.py` + migrasi `0005_telemetry_tamper.py`)
+  menyimpan status ini PER BARIS riwayat, pola yang sama seperti
+  `power_source`/`data_source`.
+- `TelemetryOut.tamper` diekspos di `/telemetry/{sn}/history` untuk
+  fitur History app.
+- `device_alerts` dapat baris baru type `"tamper"` saat rising edge
+  terdeteksi SERVER-SIDE (baris tamper=true masuk padahal baris
+  SEBELUMNYA untuk device itu tamper=false/belum ada) — BUKAN pakai
+  cooldown 12 jam seperti alert kuota, karena tamper adalah kejadian
+  diskrit/kritis: tiap episode baru yang benar-benar terpisah (didahului
+  titik tamper=false) harus tetap ternotifikasi, bukan di-suppress.
+
+(Catatan lama: sebelum upload firmware tamper ke board, pastikan dulu decode
+bit3 live di production — sudah terpenuhi per banner status di atas.)
+
+---
+
 **Status per 2026-09-10: backend LIVE, jalur GSM socket-TLS TERBUKTI GAGAL
 live, jalur GSM sudah dipindah ke AT+HTTPS native, WiFi disatukan ke backend
 yang sama.**
@@ -67,7 +200,7 @@ lagi batasan panjang parameter AT command yang perlu diakali.
 ## 1. Endpoint kirim data (dipanggil device)
 
 ```
-POST https://gps.jejakpintar.cloud/telemetry
+POST https://mqttskripsigps.jejakpintar.cloud/telemetry
 Content-Type: application/json
 X-API-Key: <DEVICE_API_KEY dari .env backend>
 
@@ -171,10 +304,11 @@ urutannya WAJIB dibalik.
 ## 2. Endpoint baca data (admin/dashboard/app)
 
 ```
-GET https://gps.jejakpintar.cloud/devices                    # semua device
-GET https://gps.jejakpintar.cloud/devices/{sn}                # satu device
-GET https://gps.jejakpintar.cloud/telemetry/{sn}/history?limit=100  # riwayat
-GET https://gps.jejakpintar.cloud/devices/{sn}/alerts?limit=20      # notifikasi (kuota dsb.)
+GET https://mqttskripsigps.jejakpintar.cloud/devices                    # semua device
+GET https://mqttskripsigps.jejakpintar.cloud/devices/{sn}                # satu device
+GET https://mqttskripsigps.jejakpintar.cloud/telemetry/{sn}/history?limit=100  # riwayat (100 titik terbaru, maks 500)
+GET https://mqttskripsigps.jejakpintar.cloud/telemetry/{sn}/history?since=<ISO-8601>&limit=20000  # semua titik sejak waktu itu
+GET https://mqttskripsigps.jejakpintar.cloud/devices/{sn}/alerts?limit=20      # notifikasi (kuota dsb.)
 Header: X-Admin-Key: <ADMIN_API_KEY dari .env backend>
 ```
 
@@ -182,14 +316,30 @@ App Flutter sudah dipindah ke endpoint ini (lihat bagian 4) — ketiga
 endpoint ini menggantikan `DeviceService.watchPrimaryDevice()` dan
 `watchHistory()` versi Firestore lama. Bedanya ini REST biasa (poll/fetch),
 bukan realtime stream seperti Firestore snapshot listener, jadi app polling
-tiap 5 detik untuk update "live" alih-alih listener.
+tiap 1 detik (posisi & notifikasi; waypoint 3 detik) untuk update "live"
+alih-alih listener. Riwayat dipanggil dengan `since` supaya lintasan rentang
+yang dipilih tergambar utuh (tanpa `since` terpotong di 500 titik terbaru).
+
+### Status koneksi (online/offline) - per 2026-11-01
+
+- Setiap selesai connect MQTT (GSM/WiFi) device publish `online` ke `status/<SN>`
+  dan memasang Last Will `offline` di topic yang sama (keepalive GSM 30 s).
+- Broker menerbitkan `offline` sendiri ±1,5x keepalive setelah koneksi device
+  putus tanpa DISCONNECT (daya dicabut, sinyal hilang). ACL broker:
+  `pattern write status/%c`.
+- Backend menyimpan `devices.online` (field `online` di `GET /devices`) dan
+  membuat alert `offline` / `online`; `offline` baru dicatat kalau tidak
+  disusul `online` dalam 5 detik (sambung-ulang sendiri tidak memicu alarm).
+- App: panel menampilkan `Offline` (merah) dan pop-up "terputus" /
+  "tersambung kembali".
 
 ## 3. Setup server (sekali, bukan per-device)
 
 Lihat `backend/README.md` untuk detail lengkap. Ringkasnya: `cp .env.example
 .env`, isi `POSTGRES_PASSWORD`/`DEVICE_API_KEY`/`ADMIN_API_KEY` (generate
 lewat `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`),
-pastikan DNS `gps.jejakpintar.cloud` sudah mengarah ke IP server, lalu
+pastikan DNS domain backend (per 2026-10-03: `mqttskripsigps.jejakpintar.cloud`,
+lihat banner status di atas) sudah mengarah ke IP server, lalu
 `docker compose up -d --build`. Migrasi Postgres (Alembic) jalan otomatis
 tiap container `api` start.
 

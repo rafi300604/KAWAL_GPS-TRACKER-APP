@@ -1,4 +1,5 @@
 import '../config/backend_config.dart';
+import '../utils/formatters.dart';
 
 /// Notifikasi otomatis device (mis. "kuota SIM menipis") - dibuat backend
 /// sendiri (lihat `backend/app/main.py:ingest_telemetry`), bukan ditulis
@@ -19,6 +20,9 @@ class DeviceAlert {
     required this.value,
     required this.createdAt,
   });
+
+  /// [message] untuk ditampilkan: jam UTC di dalam teks diubah ke WIB.
+  String get displayMessage => utcStampsToWib(message);
 
   factory DeviceAlert.fromJson(Map<String, dynamic> json) {
     return DeviceAlert(

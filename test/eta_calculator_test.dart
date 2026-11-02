@@ -31,42 +31,34 @@ void main() {
   });
 
   group('computeStraightLineEtaKm', () {
-    test('zero speed yields an unreachable ETA with no arrival time', () {
+    // Tidak ada lagi parameter speedKnots - fungsi ini pakai detour factor
+    // (jarak garis lurus x1.3, perkiraan jarak jalan sungguhan) dan
+    // kecepatan rata-rata kota tetap (25 km/h), BUKAN kecepatan GPS live
+    // device, supaya ETA fallback tidak terlalu optimis (lihat komentar di
+    // eta_calculator.dart).
+
+    test('distanceKm reflects km (with detour factor), not nautical miles', () {
       final result = computeStraightLineEtaKm(
         fromLat: 0,
         fromLng: 0,
         toLat: 1,
         toLng: 0,
-        speedKnots: 0,
       );
-      expect(result.hours, double.infinity);
-      expect(result.arrival, isNull);
-      expect(result.level, EtaLevel.bad);
+      // ~111.2 km garis lurus x1.3 faktor detour ~= 144.6 km.
+      expect(result.distanceKm, closeTo(144.6, 1.0));
     });
 
-    test('distanceKm reflects km, not nautical miles', () {
-      final result = computeStraightLineEtaKm(
-        fromLat: 0,
-        fromLng: 0,
-        toLat: 1,
-        toLng: 0,
-        speedKnots: 60,
-      );
-      expect(result.distanceKm, closeTo(111.2, 1.0));
-    });
-
-    test('speed in knots is converted to km/h for travel time', () {
+    test('travel time uses the fixed urban average speed, not device GPS speed', () {
       final now = DateTime(2026, 1, 1, 0, 0, 0);
-      // ~111.2 km at 60 knots (~111.12 km/h) should take ~1 hour.
       final result = computeStraightLineEtaKm(
         fromLat: 0,
         fromLng: 0,
         toLat: 1,
         toLng: 0,
-        speedKnots: 60,
         now: now,
       );
-      expect(result.hours, closeTo(1.0, 0.05));
+      // ~144.6 km / 25 km/h ~= 5.78 jam.
+      expect(result.hours, closeTo(5.78, 0.1));
       expect(result.arrival, isNotNull);
     });
   });

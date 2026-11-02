@@ -99,7 +99,6 @@ class EtaPanel extends StatelessWidget {
         fromLng: vessel.lng,
         toLat: w.lat,
         toLng: w.lng,
-        speedKnots: vessel.speedKnots,
       );
       return _RowData(
         waypoint: w,

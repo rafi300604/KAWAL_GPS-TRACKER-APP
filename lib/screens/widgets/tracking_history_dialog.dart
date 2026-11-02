@@ -79,6 +79,19 @@ class _TrackingHistoryDialogState extends State<TrackingHistoryDialog> {
       final points = await widget.deviceService
           .watchHistory(sn: widget.vessel.sn, days: _days)
           .first;
+      if (points.isEmpty) {
+        // Jangan pop dengan list kosong - sebelumnya dialog langsung
+        // menutup diri dan HomeScreen tidak menampilkan apa pun (tidak ada
+        // toolbar/jalur/error), jadi KELIHATAN seperti fitur ini tidak
+        // berfungsi, padahal cuma tidak ada data di rentang hari yang
+        // dipilih (device bisa saja belum kirim data selama itu). Tampilkan
+        // pesannya di sini dan biarkan user memperbesar rentang harinya.
+        if (mounted) {
+          setState(() => _error =
+              'Tidak ada data riwayat dalam $_days hari terakhir. Coba perbesar rentang waktunya.');
+        }
+        return;
+      }
       if (mounted) Navigator.of(context).pop(points);
     } catch (e) {
       if (mounted) setState(() => _error = 'Gagal mengambil history: $e');

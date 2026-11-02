@@ -60,7 +60,11 @@ class DeviceSidebar extends StatelessWidget {
           if (selectedDevice != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: VesselInfoPanel(vessel: selectedDevice!, onClose: onClearSelection),
+              child: VesselInfoPanel(
+                vessel: selectedDevice!,
+                deviceService: deviceService,
+                onClose: onClearSelection,
+              ),
             ),
           const Divider(height: 1),
           Expanded(

@@ -12,7 +12,21 @@ import '../models/route_result.dart';
 /// car-drivable roads (not a straight line), plus real distance/duration
 /// based on road speeds, exactly like Google Maps' routing engine does.
 class RoutingService {
+  // `/driving` -- profil mobil OSRM (jalur mengikuti jalan yang bisa dilalui
+  // mobil, menghormati arah satu-arah/larangan belok, BUKAN garis lurus) --
+  // ini SUDAH jalur khusus mobil, bukan jalur umum/pejalan kaki.
   static const String _baseUrl = 'https://router.project-osrm.org/route/v1/driving';
+
+  // OSRM menghitung duration dari kecepatan MAKSIMAL per kelas jalan dalam
+  // kondisi lalu lintas lancar (free-flow) - TIDAK memperhitungkan lampu
+  // merah, kemacetan, atau kondisi jalan kota padat di Indonesia sama sekali
+  // (server demo publik ini tidak punya data lalu lintas real-time, beda
+  // dari Google Maps). Di kota padat, waktu tempuh sungguhan biasanya jauh
+  // lebih lama dari angka mentah OSRM - faktor koreksi ini (dikalikan ke
+  // duration) adalah heuristik sederhana supaya ETA tidak terlalu optimis/
+  // "terlalu cepat" dibanding kenyataan, tanpa perlu API lalu lintas
+  // berbayar (Google/HERE/TomTom, yang butuh API key & billing terpisah).
+  static const double _urbanTrafficFactor = 1.4;
 
   /// [points] must have at least 2 entries: the start (vessel position)
   /// followed by each waypoint, in the order they should be visited.
@@ -56,14 +70,14 @@ class RoutingService {
       final legs = (route['legs'] as List)
           .map((l) => RouteLeg(
                 distanceMeters: (l['distance'] as num).toDouble(),
-                durationSeconds: (l['duration'] as num).toDouble(),
+                durationSeconds: (l['duration'] as num).toDouble() * _urbanTrafficFactor,
               ))
           .toList();
 
       return RouteResult(
         geometry: coordinates,
         totalDistanceMeters: (route['distance'] as num).toDouble(),
-        totalDurationSeconds: (route['duration'] as num).toDouble(),
+        totalDurationSeconds: (route['duration'] as num).toDouble() * _urbanTrafficFactor,
         legs: legs,
       );
     } catch (_) {

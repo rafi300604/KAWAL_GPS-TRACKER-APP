@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 
 import 'package:excel/excel.dart';
 import 'package:share_plus/share_plus.dart';
@@ -18,6 +19,7 @@ class ExportService {
     required String deviceSn,
     required int days,
     String? devicePowerSource,
+    Rect? sharePositionOrigin,
   }) async {
     final excel = Excel.createExcel();
     final sheetName = excel.getDefaultSheet()!;
@@ -40,6 +42,7 @@ class ExportService {
       TextCellValue('Arah (derajat)'),
       TextCellValue('Sumber Daya'),
       TextCellValue('Sumber Data'),
+      TextCellValue('Tamper'),
     ]);
 
     for (final p in points) {
@@ -61,6 +64,7 @@ class ExportService {
         // kelihatan seperti data hilang padahal cuma belum pernah dicatat.
         TextCellValue(p.powerSource ?? fallbackPowerSource ?? '-'),
         TextCellValue(p.dataSource ?? '-'),
+        TextCellValue(p.tamper ? 'Ya' : '-'),
       ]);
     }
 
@@ -75,9 +79,14 @@ class ExportService {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
 
+    // sharePositionOrigin wajib di iPad DAN iPhone iOS 26+ (share sheet
+    // tampil sebagai popover); tanpa itu share_plus melempar error dan
+    // tombol Ekspor terlihat tidak melakukan apa-apa. `subject` (bukan
+    // `text`) supaya "Simpan ke File" tidak ikut menyimpan file .txt.
     await Share.shareXFiles(
       [xFile],
-      text: 'Riwayat tracking $deviceName ($days hari)',
+      subject: 'Riwayat tracking $deviceName ($days hari)',
+      sharePositionOrigin: sharePositionOrigin,
     );
   }
 }

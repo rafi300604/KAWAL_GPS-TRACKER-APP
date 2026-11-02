@@ -222,6 +222,13 @@ const char* BACKEND_PATH   = "/telemetry";
 
 const char*    MQTT_BROKER_HOST = "mqttskripsigps.jejakpintar.cloud";
 const uint16_t MQTT_BROKER_PORT = 8883;
+// Status koneksi (2026-11-01): setiap selesai connect alat publish "online" ke status/<SN> dan memasang
+// Last Will "offline" di topic yang sama - broker menerbitkannya sendiri kalau koneksi alat putus tanpa
+// DISCONNECT (daya dicabut, sinyal hilang), setelah 1,5x keepalive. Dashboard jadi bisa menampilkan
+// status Offline walau alat sudah mati. Keepalive GSM diturunkan dari default library 60 s supaya Will
+// terbit ~45 s (bukan ~90 s) setelah putus; WiFi (PubSubClient) sudah 15 s.
+const String MQTT_TOPIC_STATUS = String("status/") + DEVICE_SN;
+#define MQTT_KEEPALIVE_GSM_S  30
 const bool     MQTT_USE_TLS     = true;
 // MQTT_USERNAME & MQTT_PASSWORD: lihat secrets.h
 // Sertifikat TLS broker ini self-signed (skala thesis, bukan dari CA publik)
@@ -1896,16 +1903,21 @@ bool mqttPastikanTersambung() {
   mqttCmdSubscribed = false;  // sesi lama hilang - subscription-nya ikut hilang
   Serial.printf("[MQTT] Menyambungkan ke broker %s:%u...\n", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
   bool ok;
+  modem.setWillMessage(MQTT_TOPIC_STATUS.c_str(), "offline", 1);  // lihat MQTT_TOPIC_STATUS
   if (strlen(MQTT_USERNAME) > 0) {
-    ok = modem.mqtt_connect(0, MQTT_BROKER_HOST, MQTT_BROKER_PORT, DEVICE_SN, MQTT_USERNAME, MQTT_PASSWORD);
+    ok = modem.mqtt_connect(0, MQTT_BROKER_HOST, MQTT_BROKER_PORT, DEVICE_SN, MQTT_USERNAME, MQTT_PASSWORD,
+                            MQTT_KEEPALIVE_GSM_S);
   } else {
-    ok = modem.mqtt_connect(0, MQTT_BROKER_HOST, MQTT_BROKER_PORT, DEVICE_SN);
+    ok = modem.mqtt_connect(0, MQTT_BROKER_HOST, MQTT_BROKER_PORT, DEVICE_SN, NULL, NULL, MQTT_KEEPALIVE_GSM_S);
   }
   if (!ok) {
     Serial.println("[MQTT] Gagal connect ke broker.");
     return false;
   }
   mqttConnectOkMillis = millis();
+  tandaiGsmRfAktif();
+  bool statusOk = modem.mqtt_publish(0, MQTT_TOPIC_STATUS.c_str(), "online");
+  Serial.printf("[MQTT] publish %s online -> %s\n", MQTT_TOPIC_STATUS.c_str(), statusOk ? "OK" : "GAGAL");
   // mqtt_connect() library selalu clean session (CMQTTCONNECT ...,1) -
   // subscription hilang tiap reconnect, jadi WAJIB subscribe ulang di sini.
   mqttSubscribePerintah();
@@ -2045,14 +2057,16 @@ bool mqttWifiPastikanTersambung() {
   Serial.printf("[WiFi-MQTT] Menyambungkan ke broker %s:%u...\n", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
   bool ok;
   if (strlen(MQTT_USERNAME) > 0) {
-    ok = mqttWifiClient.connect(DEVICE_SN, MQTT_USERNAME, MQTT_PASSWORD);
+    ok = mqttWifiClient.connect(DEVICE_SN, MQTT_USERNAME, MQTT_PASSWORD, MQTT_TOPIC_STATUS.c_str(), 1, false, "offline");
   } else {
-    ok = mqttWifiClient.connect(DEVICE_SN);
+    ok = mqttWifiClient.connect(DEVICE_SN, MQTT_TOPIC_STATUS.c_str(), 1, false, "offline");
   }
   if (!ok) {
     Serial.printf("[WiFi-MQTT] Gagal connect (state=%d).\n", mqttWifiClient.state());
     return false;
   }
+  bool statusOk = mqttWifiClient.publish(MQTT_TOPIC_STATUS.c_str(), "online");
+  Serial.printf("[WiFi-MQTT] publish %s online -> %s\n", MQTT_TOPIC_STATUS.c_str(), statusOk ? "OK" : "GAGAL");
   // Clean session - subscription hilang tiap reconnect, jadi WAJIB subscribe
   // ulang setiap kali connect (lihat [PERINTAH MQTT]).
   mqttWifiSubscribePerintah();

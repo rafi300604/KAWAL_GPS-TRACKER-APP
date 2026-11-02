@@ -1,12 +1,21 @@
 import os
+from urllib.parse import quote_plus
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-# Semua konfigurasi diambil dari .env (di-inject oleh docker compose) --
-# TIDAK ada nilai hardcode di sini. Kalau DATABASE_URL belum diset, fail
-# cepat dengan pesan jelas, bukan diam-diam pakai value default.
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Jika credential individual tersedia, buat DATABASE_URL yang di-quote agar aman dari karakter spesial
+user = os.getenv("POSTGRES_USER")
+password = os.getenv("POSTGRES_PASSWORD")
+dbname = os.getenv("POSTGRES_DB")
+host = os.getenv("POSTGRES_HOST", "db")
+port = os.getenv("POSTGRES_PORT", "5432")
+
+if user and password and dbname:
+    DATABASE_URL = f"postgresql+asyncpg://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{dbname}"
+else:
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL belum diset -- harus diambil dari .env. "

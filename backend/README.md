@@ -192,7 +192,7 @@ membalas di `cmd-ack/<SN>`. Saat ini ada empat perintah:
 
 | Perintah | Isi | Efek di device |
 |---|---|---|
-| `interval` | `{"cmd":"interval","interval_s":30,"duration_min":60}` | Interval kirim jadi `interval_s` detik (10–1800) di semua mode selama `duration_min` menit (1–180), lalu kembali normal sendiri. Reboot juga membatalkannya. |
+| `interval` | `{"cmd":"interval","interval_s":30,"duration_min":60}` | Interval kirim jadi `interval_s` detik (2–1800) di semua mode selama `duration_min` menit (1–180), lalu kembali normal sendiri. Reboot juga membatalkannya. |
 | `reset` | `{"cmd":"reset"}` | Batalkan override interval sekarang juga. |
 | `buzzer` | `{"cmd":"buzzer","duration_s":10}` | Bunyikan buzzer `duration_s` detik (1–20), bukan kejadian tamper. Setelah device membalas `applied`, backend membuat alert `remote_alarm` ("Alarm jarak jauh ...") yang memunculkan popup + suara di app. Ditolak kalau alarm tamper asli sedang aktif. |
 | `test_tamper` | `{"cmd":"test_tamper"}` | Simulasi tamper: buzzer berbunyi seperti tamper asli dan device langsung mengirim satu titik tamper bertanda uji (flags bit4). Backend membuat alert `tamper` biasa (alarm app tetap bunyi) dengan pesan berawalan `[UJI]`. |

@@ -1,0 +1,14 @@
+# ACL listener PUBLIK 8883 (dipakai device dari internet) -- lihat
+# mosquitto.conf. %c = client id = DEVICE_SN di firmware (mis. ESP32-01), jadi
+# tiap device HANYA bisa:
+#   - kirim telemetry miliknya sendiri       -> telemetry/<SN>
+#   - membalas perintah miliknya sendiri     -> cmd-ack/<SN>
+#   - menerima perintah untuk dirinya saja   -> cmd/<SN>
+#   - lapor status koneksinya sendiri        -> status/<SN> ("online" + Last Will "offline")
+# Device TIDAK bisa menulis ke cmd/... (mengirim perintah) atau membaca
+# telemetry device lain. Perintah hanya dikirim backend lewat listener
+# internal 1883 (tidak terbuka ke internet).
+pattern write telemetry/%c
+pattern write cmd-ack/%c
+pattern read cmd/%c
+pattern write status/%c

@@ -1,0 +1,5 @@
+{
+  // Setiap "flutter run" dari VS Code (F5, tombol Run di atas main(), konfigurasi
+  // mana pun) ikut membaca secrets.json: kunci API + akun Login Cepat.
+  "dart.flutterRunAdditionalArgs": ["--dart-define-from-file=secrets.json"]
+}

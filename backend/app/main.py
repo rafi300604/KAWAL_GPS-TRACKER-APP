@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import models, schemas
+from . import models, schemas, telemetry
 from .auth import (
     create_access_token,
     get_current_user,
@@ -16,10 +16,34 @@ from .auth import (
     verify_password,
 )
 from .database import get_db
+from .gps_mqtt_client import (
+    clear_retained_command,
+    start_mqtt_client,
+    stop_mqtt_client,
+    trigger_command_dispatch,
+)
 
 # Skema tabel dikelola lewat Alembic (alembic/versions/), dijalankan
 # otomatis oleh docker-entrypoint.sh sebelum uvicorn start.
-app = FastAPI(title="Jejak Pintar Telemetry Ingest")
+app = FastAPI(title="Kawal GPS Telemetry Ingest")
+
+# Batas titik /telemetry/{sn}/history?since=... (±7 hari data per 30 detik).
+HISTORY_SINCE_MAX = 20000
+
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    loop = asyncio.get_running_loop()
+    print("[startup] starting MQTT client...", flush=True)
+    start_mqtt_client(loop=loop)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("[shutdown] stopping MQTT client...", flush=True)
+    stop_mqtt_client()
+
 
 # Tanpa ini, browser (Flutter web) mengirim preflight OPTIONS sebelum
 # request asli -- server balas 405 dan browser membatalkan sendiri
@@ -31,17 +55,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Notifikasi "kuota SIM diduga habis" -- lihat ingest_telemetry(). Modem GSM
-# tidak punya cara membaca sisa kuota asli dari operator, jadi firmware
-# (skripsi.ino) mengirim heuristik lewat field `dataSource` yang sudah ada
-# (bukan field angka baru) begitu mendeteksi sesi data GSM gagal berkali-kali
-# padahal jaringan seluler terdaftar normal -- lihat FIRMWARE_CONTRACT.md.
-# Cooldown mencegah satu baris device_alerts baru dibuat di SETIAP transmisi
-# selama kondisinya masih berlangsung (device bisa kirim tiap beberapa
-# detik), yang akan membanjiri riwayat alert dengan ratusan baris identik.
-QUOTA_WARNING_KEYWORD = "kuota"
-QUOTA_ALERT_COOLDOWN = timedelta(hours=12)
 
 
 @app.get("/health")
@@ -57,63 +70,54 @@ async def health():
 async def ingest_telemetry(payload: schemas.TelemetryIn, db: AsyncSession = Depends(get_db)):
     """Endpoint yang dipanggil device. Device tidak perlu registrasi
     terpisah -- baris di tabel `devices` otomatis dibuat/diupdate
-    (upsert) berdasarkan `sn`, mirip pola satu dokumen Firestore per sn."""
-    result = await db.execute(select(models.Device).where(models.Device.sn == payload.sn))
-    device = result.scalar_one_or_none()
+    (upsert) berdasarkan `sn`, mirip pola satu dokumen Firestore per sn.
 
-    if device is None:
-        device = models.Device(sn=payload.sn)
-        db.add(device)
-
-    if payload.name is not None:
-        device.name = payload.name
-    if payload.power_source is not None:
-        device.power_source = payload.power_source
-    device.data_source = payload.data_source
-    if payload.status is not None:
-        device.status = payload.status
-
-    device.last_lat = payload.lat
-    device.last_lng = payload.lng
-    device.last_speed_knots = payload.speed_knots
-    device.last_heading = payload.heading
-    device.last_transmitted_at = payload.timestamp
-
-    if QUOTA_WARNING_KEYWORD in payload.data_source.lower():
-        cutoff = datetime.now(timezone.utc) - QUOTA_ALERT_COOLDOWN
-        recent_alert = await db.execute(
-            select(models.DeviceAlert.id)
-            .where(
-                models.DeviceAlert.device_sn == payload.sn,
-                models.DeviceAlert.type == "low_quota",
-                models.DeviceAlert.created_at >= cutoff,
+    Terima DUA format body (lihat FIRMWARE_CONTRACT.md): field `d` (biner
+    hex-encode, format baru hemat kuota) ATAU field lat/lng/timestamp/
+    dataSource lama langsung. `d` diprioritaskan kalau dua-duanya ada."""
+    if payload.d is not None:
+        decoded = telemetry.decode_compact_telemetry(payload.d)
+        lat = decoded["lat"]
+        lng = decoded["lng"]
+        heading = decoded["heading"]
+        speed_knots = decoded["speed_knots"]
+        timestamp = decoded["timestamp"]
+        data_source = decoded["data_source"]
+        power_source = decoded["power_source"]
+        tamper = decoded["tamper"]
+        tamper_test = decoded["tamper_test"]
+    else:
+        if payload.lat is None or payload.lng is None or payload.timestamp is None or payload.data_source is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Body harus berisi field 'd' (format baru) atau "
+                "lat/lng/timestamp/dataSource (format lama)",
             )
-            .limit(1)
-        )
-        if recent_alert.scalar_one_or_none() is None:
-            db.add(
-                models.DeviceAlert(
-                    device_sn=payload.sn,
-                    type="low_quota",
-                    message=f"Device {payload.sn} melaporkan: {payload.data_source}",
-                    value=None,
-                )
-            )
+        lat = payload.lat
+        lng = payload.lng
+        heading = payload.heading if payload.heading is not None else 0.0
+        speed_knots = payload.speed_knots if payload.speed_knots is not None else 0.0
+        timestamp = payload.timestamp
+        data_source = payload.data_source
+        power_source = payload.power_source
+        tamper = payload.tamper if payload.tamper is not None else False
+        tamper_test = False
 
-    row = models.Telemetry(
-        device_sn=payload.sn,
-        ts=payload.timestamp,
-        lat=payload.lat,
-        lng=payload.lng,
-        speed_knots=payload.speed_knots,
-        heading=payload.heading,
-        data_source=payload.data_source,
-        power_source=payload.power_source,
+    return await telemetry.persist_telemetry(
+        db,
+        sn=payload.sn,
+        lat=lat,
+        lng=lng,
+        heading=heading,
+        speed_knots=speed_knots,
+        timestamp=timestamp,
+        data_source=data_source,
+        power_source=power_source,
+        tamper=tamper,
+        tamper_test=tamper_test,
+        name=payload.name,
+        status=payload.status,
     )
-    db.add(row)
-    await db.commit()
-    await db.refresh(device)
-    return device
 
 
 @app.get(
@@ -157,18 +161,93 @@ async def list_device_alerts(sn: str, limit: int = 20, db: AsyncSession = Depend
     return result.scalars().all()
 
 
+@app.post(
+    "/devices/{sn}/commands",
+    response_model=schemas.DeviceCommandOut,
+    status_code=201,
+    dependencies=[Depends(require_admin)],
+)
+async def create_device_command(
+    sn: str, payload: schemas.DeviceCommandIn, db: AsyncSession = Depends(get_db)
+):
+    """Kirim perintah ke device lewat MQTT `cmd/<SN>`, mis. percepat interval
+    kirim sementara: {"cmd":"interval","interval_s":30,"duration_min":60},
+    atau batalkan: {"cmd":"reset"}. Hanya pemegang X-Admin-Key. Status
+    (pending/sent/applied/rejected/expired) dicek lewat GET di bawah."""
+    result = await db.execute(select(models.Device.id).where(models.Device.sn == sn))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Device tidak ditemukan")
+    command = models.DeviceCommand(
+        device_sn=sn,
+        cmd=payload.cmd,
+        interval_s=payload.interval_s if payload.cmd == "interval" else None,
+        duration_min=payload.duration_min if payload.cmd == "interval" else None,
+        duration_s=payload.duration_s if payload.cmd == "buzzer" else None,
+        status="pending",
+    )
+    db.add(command)
+    await db.commit()
+    await db.refresh(command)
+    trigger_command_dispatch()
+    return command
+
+
+@app.get(
+    "/devices/{sn}/commands",
+    response_model=list[schemas.DeviceCommandOut],
+    dependencies=[Depends(require_admin)],
+)
+async def list_device_commands(sn: str, limit: int = 20, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(models.DeviceCommand)
+        .where(models.DeviceCommand.device_sn == sn)
+        .order_by(models.DeviceCommand.id.desc())
+        .limit(min(limit, 100))
+    )
+    return result.scalars().all()
+
+
+@app.delete(
+    "/devices/{sn}",
+    status_code=204,
+    dependencies=[Depends(require_admin)],
+)
+async def delete_device(sn: str, db: AsyncSession = Depends(get_db)):
+    """Hapus device beserta seluruh data terkait. FK ke devices.sn TIDAK
+    ON DELETE CASCADE (lihat alembic/versions/), jadi baris anak
+    (telemetry, device_alerts, waypoints) harus dihapus dulu sebelum baris
+    device sendiri, kalau tidak Postgres akan menolak dengan
+    ForeignKeyViolation."""
+    result = await db.execute(select(models.Device).where(models.Device.sn == sn))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device tidak ditemukan")
+
+    await db.execute(delete(models.Waypoint).where(models.Waypoint.device_sn == sn))
+    await db.execute(delete(models.DeviceCommand).where(models.DeviceCommand.device_sn == sn))
+    await db.execute(delete(models.DeviceAlert).where(models.DeviceAlert.device_sn == sn))
+    await db.execute(delete(models.Telemetry).where(models.Telemetry.device_sn == sn))
+    await db.delete(device)
+    await db.commit()
+    clear_retained_command(sn)  # jangan tinggalkan perintah retained di cmd/<SN>
+
+
 @app.get(
     "/telemetry/{sn}/history",
     response_model=list[schemas.TelemetryOut],
     dependencies=[Depends(require_admin)],
 )
-async def telemetry_history(sn: str, limit: int = 50, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(models.Telemetry)
-        .where(models.Telemetry.device_sn == sn)
-        .order_by(models.Telemetry.ts.desc())
-        .limit(min(limit, 500))
-    )
+async def telemetry_history(
+    sn: str, limit: int = 50, since: datetime | None = None, db: AsyncSession = Depends(get_db)
+):
+    """Tanpa `since`: `limit` titik terbaru (maks 500). Dengan `since` (ISO-8601):
+    titik sejak waktu itu, maks HISTORY_SINCE_MAX -- dipakai app supaya lintasan
+    rentang waktu yang dipilih tergambar utuh, tidak terpotong di 500 titik."""
+    query = select(models.Telemetry).where(models.Telemetry.device_sn == sn)
+    if since is not None:
+        query = query.where(models.Telemetry.ts >= since)
+    cap = HISTORY_SINCE_MAX if since is not None else 500
+    result = await db.execute(query.order_by(models.Telemetry.ts.desc()).limit(min(limit, cap)))
     return result.scalars().all()
 
 

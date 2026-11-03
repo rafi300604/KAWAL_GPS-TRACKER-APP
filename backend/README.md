@@ -1,362 +1,273 @@
-# GPS — Telemetry Ingest
+# KAWAL GPS — Backend
 
-Terima data posisi GPS + status alat (kapal/tracker) lewat HTTP POST,
-simpan ke PostgreSQL. Jalan di Docker, di belakang Caddy (HTTPS otomatis
-lewat domain `gps.jejakpintar.cloud`), dengan autentikasi API key dan
-migrasi schema lewat Alembic.
+Backend sistem pelacak KAWAL (skripsi). Menerima telemetry dari alat ESP32 + modem SIMCom A7670E lewat
+**MQTT (TLS)**, menyimpannya ke **PostgreSQL**, mengirim **perintah dua arah** ke alat, mencatat status
+**online/offline** alat, dan menyediakan **REST API (FastAPI)** untuk aplikasi Flutter KAWAL
+([rafi300604/KAWAL_GPS-TRACKER-APP](https://github.com/rafi300604/KAWAL_GPS-TRACKER-APP)).
+
+Produksi: `https://mqttskripsigps.jejakpintar.cloud` (API) dan `mqttskripsigps.jejakpintar.cloud:8883`
+(broker MQTT untuk alat).
+
+## Arsitektur
+
+```
+                      MQTT over TLS :8883 (user/pass + ACL per client id)
+┌──────────────────┐  telemetry/<SN>  status/<SN>  cmd-ack/<SN>   ┌───────────────────────────────┐
+│ ESP32 + A7670E   │ ──────────────────────────────────────────▶ │  mosquitto  (kawal-gps-mqtt)   │
+│ GSM utama,       │ ◀────────────────────────────────────────── │  :8883 publik, :1883 internal  │
+│ WiFi cadangan    │                 cmd/<SN>                    └───────────────┬───────────────┘
+└──────────────────┘                                                 :1883 (network Docker internal)
+                                                                                 │
+┌──────────────────┐  HTTPS (REST, JSON)   ┌──────────────┐        ┌─────────────▼────────────────┐
+│ App Flutter      │ ────────────────────▶ │ nginx (VPS)  │ ─────▶ │  FastAPI  (kawal-gps-api)     │
+│ KAWAL (web/iOS/  │  X-Admin-Key / JWT    │ reverse proxy│        │  + subscriber MQTT (paho)     │
+│ Android)         │                       └──────────────┘        └─────────────┬────────────────┘
+└──────────────────┘                                                             │
+                                                                 ┌───────────────▼──────────────┐
+                                                                 │ PostgreSQL 16 (kawal-gps-db)  │
+                                                                 └──────────────────────────────┘
+```
+
+- **Alat → broker.** Alat publish ke listener publik `8883` (TLS + username/password). ACL membatasi tiap
+  alat hanya ke topic miliknya sendiri (`%c` = client id = SN).
+- **Broker → backend.** Container `api` subscribe lewat listener internal `1883` (anonymous, tidak
+  di-publish ke host). Payload di-decode oleh `app/telemetry.py:decode_compact_telemetry`, lalu disimpan.
+- **Perintah.** Backend publish perintah ke `cmd/<SN>` (retained, QoS 1). Alat membalas ke `cmd-ack/<SN>`.
+- **Status koneksi.** Alat publish `online` ke `status/<SN>` setiap selesai connect dan memasang Last Will
+  `offline`. Kalau alat putus tanpa DISCONNECT (daya dicabut, sinyal hilang), broker yang menerbitkan
+  `offline`.
+- **App → API.** App memakai REST lewat HTTPS. Di produksi, API berada di belakang nginx milik VPS
+  (network Docker `devops_default`). `Caddyfile` hanya contoh alternatif untuk deploy mandiri; tidak
+  dipakai `docker-compose.yml`.
+- **`POST /telemetry` (HTTPS)** masih diterima sebagai jalur alternatif (format JSON sama, field `d`). Firmware
+  saat ini mengirim lewat MQTT di jalur GSM maupun WiFi.
 
 ## Struktur
 
 ```
 .
 ├── app/
-│   ├── main.py        # endpoint FastAPI
-│   ├── models.py       # tabel devices (state terkini) & telemetry (histori)
-│   ├── schemas.py       # validasi request/response, field sesuai firmware
-│   ├── auth.py           # shared device key + admin key
-│   └── database.py       # koneksi async ke Postgres
-├── alembic/                # migrasi schema database
-├── Caddyfile                # reverse proxy + HTTPS otomatis
-├── docker-entrypoint.sh     # jalankan migrasi lalu start API
+│   ├── main.py             # endpoint FastAPI (REST)
+│   ├── gps_mqtt_client.py  # subscriber MQTT: telemetry, cmd-ack, status + pengirim perintah
+│   ├── telemetry.py        # decode payload 17 byte, simpan telemetry, buat alert, status online
+│   ├── commands.py         # validasi & siklus hidup perintah ke alat
+│   ├── models.py           # tabel SQLAlchemy
+│   ├── schemas.py          # skema request/response (Pydantic)
+│   ├── auth.py             # X-API-Key, X-Admin-Key, JWT login
+│   └── database.py         # koneksi async ke Postgres
+├── alembic/versions/       # migrasi schema 0001–0009
+├── mqtt/config/            # mosquitto.conf + acl (template; passwd & certs/ dibuat di VPS)
+├── docker-compose.yml      # db + api + mqtt
+├── docker-entrypoint.sh    # buat database kalau belum ada, migrasi, lalu start API
 ├── Dockerfile
-├── docker-compose.yml
+├── Caddyfile               # contoh reverse proxy untuk deploy mandiri (tidak dipakai compose)
 ├── .env.example
 └── requirements.txt
 ```
 
-## Setup awal
+## Database
 
-**1. DNS dulu** — sebelum `docker compose up`, pastikan subdomain
-`gps.jejakpintar.cloud` sudah punya DNS **A record** yang mengarah ke
-IP VPS ini. Caddy butuh ini untuk minta sertifikat Let's Encrypt secara
-otomatis lewat verifikasi HTTP-01 di port 80.
+| Tabel | Isi |
+|---|---|
+| `devices` | State terkini per `sn`: posisi, kecepatan, arah, sumber data/daya, `tamper`, `online` |
+| `telemetry` | Riwayat lengkap, satu baris per titik (dipakai replay rute dan ekspor Excel) |
+| `device_alerts` | Notifikasi: `tamper`, `low_quota`, `remote_alarm`, `offline`, `online` |
+| `device_commands` | Perintah ke alat dan statusnya |
+| `users` | Akun aplikasi (login JWT, role `admin` / `user`) |
+| `waypoints` | Titik tujuan per alat untuk fitur ETA |
 
-**2. Env**
+Migrasi Alembic berjalan otomatis setiap container `api` start.
+
+## Autentikasi
+
+Tiga skema, jangan tertukar:
+
+| Header | Dipakai oleh | Untuk |
+|---|---|---|
+| `X-API-Key` (`DEVICE_API_KEY`) | Alat (jalur HTTPS) | `POST /telemetry` |
+| `X-Admin-Key` (`ADMIN_API_KEY`) | App / admin | Baca device, riwayat, alert; kirim perintah; hapus device |
+| `Authorization: Bearer <JWT>` | App (per pengguna) | `/users*`, `/devices/{sn}/waypoints*` |
+
+Jalur MQTT tidak memakai header di atas: alat login ke broker dengan username/password (`mqtt/config/passwd`).
+
+## REST API
+
+| Method | Path | Auth | Keterangan |
+|---|---|---|---|
+| GET | `/health` | – | Cek hidup |
+| POST | `/telemetry` | X-API-Key | Telemetry lewat HTTPS (`{"sn": "...", "d": "<34 hex>"}`) |
+| GET | `/devices` | X-Admin-Key | State terkini semua device (termasuk `online`, `tamper`) |
+| GET | `/devices/{sn}` | X-Admin-Key | State terkini satu device |
+| DELETE | `/devices/{sn}` | X-Admin-Key | Hapus device beserta seluruh datanya |
+| GET | `/telemetry/{sn}/history` | X-Admin-Key | Riwayat. Tanpa `since`: `limit` titik terbaru (maks 500). Dengan `since=<ISO-8601>`: semua titik sejak waktu itu (maks 20000) |
+| GET | `/devices/{sn}/alerts` | X-Admin-Key | Notifikasi terbaru (`limit`, maks 100) |
+| POST | `/devices/{sn}/commands` | X-Admin-Key | Kirim perintah ke alat |
+| GET | `/devices/{sn}/commands` | X-Admin-Key | Status perintah (`limit`, maks 100) |
+| POST | `/auth/login` | – | Email + password → JWT (berlaku 30 hari) |
+| GET / PATCH | `/users/me` | JWT | Profil sendiri |
+| GET / POST | `/users` | JWT admin | Daftar / buat pengguna |
+| PATCH / DELETE | `/users/{id}` | JWT admin | Ubah / hapus pengguna |
+| GET / POST | `/devices/{sn}/waypoints` | JWT | Daftar / tambah waypoint |
+| DELETE | `/devices/{sn}/waypoints/{id}` | JWT | Hapus waypoint |
+
+Contoh:
+
+```bash
+DOMAIN=mqttskripsigps.jejakpintar.cloud
+
+curl https://$DOMAIN/health
+curl https://$DOMAIN/devices -H "X-Admin-Key: <ADMIN_API_KEY>"
+curl "https://$DOMAIN/telemetry/ESP32-01/history?since=2026-11-01T00:00:00Z&limit=20000" \
+  -H "X-Admin-Key: <ADMIN_API_KEY>"
+curl "https://$DOMAIN/devices/ESP32-01/alerts?limit=20" -H "X-Admin-Key: <ADMIN_API_KEY>"
+
+curl -X POST https://$DOMAIN/auth/login -H "Content-Type: application/json" \
+  -d '{"email": "skripsi@tester.com", "password": "<password akun>"}'
+# -> {"accessToken": "...", "tokenType": "bearer", "user": {...}}
+```
+
+Device **tidak perlu registrasi**: baris `devices` dibuat/diupdate otomatis berdasarkan `sn`.
+
+## MQTT
+
+| Topic | Arah | Isi |
+|---|---|---|
+| `telemetry/<SN>` | alat → backend | Hex mentah 34 karakter (17 byte), **bukan** JSON |
+| `status/<SN>` | alat → backend | `online` setelah connect; Last Will `offline` (QoS 1) |
+| `cmd/<SN>` | backend → alat | Perintah JSON, retained + QoS 1 (lihat di bawah) |
+| `cmd-ack/<SN>` | alat → backend | Balasan perintah: `applied` / `reset` / `rejected` |
+
+### Payload telemetry (17 byte, big-endian)
+
+| Byte | Isi | Tipe | Catatan |
+|---|---|---|---|
+| 0–3 | lat | int32 | nilai asli = int32 / 1.000.000 |
+| 4–7 | lng | int32 | nilai asli = int32 / 1.000.000 |
+| 8–9 | heading | uint16 | derajat 0–359 |
+| 10–11 | speedKnots | uint16 | nilai asli = uint16 / 100 |
+| 12–15 | timestamp | uint32 | UNIX epoch UTC (detik), dari jam GPS |
+| 16 | flags | uint8 | bit0 dataSource (0=GSM, 1=WIFI); bit1 kuota diduga habis; bit2 powerSource (0=BATTERY, 1=AKI); bit3 tamper; bit4 tamper uji (`test_tamper`); bit5–7 cadangan |
+
+Contoh `ffa16540065da380002d03526aa91aa400` → lat −6,2; lng 106,8; heading 45°; 8,5 knot;
+2026-09-15T10:15:00Z; flags 0.
+
+### Alert yang dibuat backend
+
+| `type` | Pemicu |
+|---|---|
+| `tamper` | Setiap titik dengan bit3=1 (tanpa cooldown — kejadian kritis). Bit4=1 → pesan berawalan `[UJI]` |
+| `low_quota` | `dataSource` mengandung "kuota" (bit1=1 di-decode jadi `WIFI (GSM: kuota diduga habis)`). Cooldown 12 jam per device |
+| `remote_alarm` | Alat membalas `applied` untuk perintah `buzzer` |
+| `offline` | `status/<SN>` = `offline` dan tidak disusul `online` dalam 5 detik |
+| `online` | `status/<SN>` = `online` (atau telemetry masuk) setelah device tercatat offline |
+
+Waktu `offline` muncul ≈ 1,5 × keepalive (GSM 30 s, WiFi 15 s) + 5 s debounce. Debounce mencegah
+alarm palsu saat sesi lama digantikan sesi baru dengan client id yang sama (GSM ↔ WiFi).
+
+## Perintah ke alat (MQTT dua arah)
+
+| Perintah | Isi | Efek di alat |
+|---|---|---|
+| `interval` | `{"cmd":"interval","interval_s":30,"duration_min":60}` | Interval kirim jadi `interval_s` detik (2–1800) di semua mode selama `duration_min` menit (1–180), lalu kembali normal. Reboot juga membatalkannya. |
+| `reset` | `{"cmd":"reset"}` | Batalkan override interval sekarang juga. |
+| `buzzer` | `{"cmd":"buzzer","duration_s":10}` | Bunyikan buzzer 1–20 detik. Setelah `applied`, backend membuat alert `remote_alarm`. Ditolak kalau alarm tamper asli sedang aktif. |
+| `test_tamper` | `{"cmd":"test_tamper"}` | Simulasi tamper: buzzer berbunyi dan alat langsung mengirim satu titik tamper bertanda uji (bit4). |
+
+```bash
+curl -X POST https://$DOMAIN/devices/ESP32-01/commands \
+  -H "X-Admin-Key: <ADMIN_API_KEY>" -H "Content-Type: application/json" \
+  -d '{"cmd":"interval","interval_s":30,"duration_min":60}'
+curl https://$DOMAIN/devices/ESP32-01/commands -H "X-Admin-Key: <ADMIN_API_KEY>"
+```
+
+Atau langsung dari database — backend mengambil baris baru dalam ≤ 10 detik:
+
+```sql
+INSERT INTO device_commands (device_sn, cmd, interval_s, duration_min) VALUES ('ESP32-01', 'interval', 30, 60);
+INSERT INTO device_commands (device_sn, cmd, duration_s) VALUES ('ESP32-01', 'buzzer', 10);
+```
+
+Status: `pending` → `sent` → `applied` / `reset` / `rejected`, atau `invalid` (nilai di luar batas),
+`superseded` (digantikan perintah yang lebih baru), `expired` (tidak dibalas dalam 60 menit).
+
+Pengiriman: perintah dipublish **retained** dan diulang tiap 2 menit sampai dibalas. Alat memeriksa
+koneksi MQTT kira-kira tiap 60 detik dan menyambung ulang kalau putus, jadi perintah biasanya diterima
+dalam ±1 menit. Setelah dibalas atau kedaluwarsa, retained dihapus.
+
+## Setup
+
+### 1. Env
 
 ```bash
 cp .env.example .env
 ```
 
-Isi `.env`:
-
-- `POSTGRES_USER` — user Postgres (mis. `kawal_gps_user`).
-- `POSTGRES_PASSWORD` — ganti dari default.
-- `POSTGRES_DB` — nama database aplikasi, mis. `kawal_gps_db`. Wajib sama
-  di semua container (compose menyusun `DATABASE_URL` dari nilai ini).
-- `DEVICE_API_KEY` — shared secret untuk **semua** device di fleet.
-  Generate dengan:
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` — compose menyusun `DATABASE_URL` dari nilai ini.
+- `DEVICE_API_KEY`, `ADMIN_API_KEY`, `JWT_SECRET` — tiga nilai acak yang **berbeda**:
   ```bash
   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
-- `ADMIN_API_KEY` — untuk baca data (dashboard/admin). Generate dengan
-  cara yang sama, pakai key **berbeda** dari `DEVICE_API_KEY`.
-- `JWT_SECRET` — buat menandatangani token login pengguna (`POST
-  /auth/login`). Generate dengan cara yang sama, pakai key **berbeda**
-  dari dua di atas.
-- `DOMAIN` — sudah di-set ke `gps.jejakpintar.cloud`, biarkan saja
-  kecuali mau testing lokal (ganti ke `localhost`).
+- `GPS_MQTT_BROKER` / `GPS_MQTT_INTERNAL_PORT` — default `mqtt` / `1883` (broker di stack ini).
+- `MQTT_CONFIG_DIR` (opsional) — folder config broker di host, default `/opt/kawal-gps/mqtt/config`.
 
-## Menjalankan
+### 2. Broker MQTT (sekali, di VPS)
+
+File berikut berisi rahasia, dibuat langsung di VPS dan **tidak pernah di-commit** (sudah di `.gitignore`):
+
+```bash
+# password alat (satu kredensial bersama untuk semua alat)
+docker run --rm -v "/opt/kawal-gps/mqtt/config:/mosquitto/config" eclipse-mosquitto:2.1.2-alpine \
+  mosquitto_passwd -b -c /mosquitto/config/passwd <USERNAME> <PASSWORD>
+
+# sertifikat TLS self-signed
+mkdir -p /opt/kawal-gps/mqtt/config/certs && cd /opt/kawal-gps/mqtt/config/certs
+openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+  -keyout server.key -out server.crt -subj "/CN=<domain broker>"
+cp server.crt ca.crt
+```
+
+Salin juga `mqtt/config/mosquitto.conf` dan `mqtt/config/acl` dari repo ini ke folder yang sama. ACL wajib
+memuat keempat baris berikut. Tanpa `status/%c`, broker menolak koneksi alat yang memasang Last Will.
+
+```
+pattern write telemetry/%c
+pattern write cmd-ack/%c
+pattern read cmd/%c
+pattern write status/%c
+```
+
+Setelah mengubah ACL: `docker kill -s HUP kawal-gps-mqtt` (atau restart container).
+
+### 3. Jalankan
 
 ```bash
 docker compose up -d --build
-docker compose ps   # pastikan db "healthy", lalu api dan caddy jalan
+docker compose ps        # db "healthy", lalu api dan mqtt jalan
+curl https://<domain>/health
 ```
 
-Migrasi database jalan otomatis tiap kali container `api` start.
+### Deploy produksi
+
+1. Push ke `main` repo ini.
+2. Portainer → stack KAWAL → **Pull and redeploy**.
+3. `docker exec devops-pl-nginx nginx -s reload`. nginx menyimpan IP lama `kawal-gps-api`, jadi tanpa
+   reload hasilnya 502.
+4. Cek `curl https://mqttskripsigps.jejakpintar.cloud/health` → `200`.
+
+### Menambah migrasi
 
 ```bash
-curl https://gps.jejakpintar.cloud/health
-```
-
-(Tidak perlu `-k` lagi karena sertifikatnya dari Let's Encrypt, valid
-publik — beda dari waktu testing lokal pakai `localhost` sebelumnya.)
-
-## Kirim data (dari device)
-
-Device **tidak perlu registrasi terpisah** — baris di tabel `devices`
-otomatis dibuat/diupdate berdasarkan `sn`, persis seperti pola satu
-dokumen Firestore per `sn` yang sudah kamu pakai sekarang.
-
-```bash
-curl -X POST https://gps.jejakpintar.cloud/telemetry \
-  -H "X-API-Key: <isi DEVICE_API_KEY dari .env>" \
-  -H "Content-Type: application/json" \
-  -d '{
-        "sn": "ESP32-01",
-        "lat": -6.200000,
-        "lng": 106.816666,
-        "speedKnots": 5.2,
-        "heading": 120,
-        "timestamp": "2026-09-09T10:15:00Z",
-        "name": "Kapal Nelayan 1",
-        "powerSource": "BATTERY",
-        "dataSource": "GSM"
-      }'
-```
-
-Untuk jalur WiFi, tambahkan `"status": "active"` di body — field ini
-opsional dan cuma dipakai khusus jalur WiFi sesuai spesifikasi asli.
-
-Field yang **wajib**: `sn`, `lat`, `lng`, `timestamp`, `dataSource`.
-Field opsional (`speedKnots`, `heading`, `name`, `powerSource`,
-`status`) boleh diabaikan device kalau memang belum tersedia —
-`speedKnots` dan `heading` default ke `0` kalau tidak dikirim.
-
-`dataSource` **tidak selalu cuma `"GSM"`/`"WIFI"` polos** (maks. 50
-karakter) — firmware (`skripsi.ino`) juga bisa kirim string deskriptif
-seperti `"WIFI (GSM: kuota diduga habis)"` kalau mendeteksi sesi data GSM
-gagal berkali-kali padahal jaringan seluler terdaftar normal (heuristik
-kuota SIM habis — modem tidak punya cara membaca sisa kuota asli dari
-operator). Kalau string ini mengandung kata "kuota", backend otomatis
-mencatat satu baris di `device_alerts` (lihat `GET /devices/{sn}/alerts`
-di bawah) — dengan cooldown 12 jam per device supaya tidak spam satu baris
-per transmisi selama kondisinya masih berlangsung. Lihat
-`FIRMWARE_CONTRACT.md` untuk detail lengkap.
-
-Response-nya balikan **state terkini** device tersebut (posisi +
-status terbaru), berguna kalau firmware mau langsung konfirmasi data
-tersimpan tanpa GET terpisah.
-
-## Kirim data lewat MQTT (jalur GSM/seluler, hemat kuota)
-
-Alternatif dari HTTPS di atas, khusus device yang kirim lewat modem
-seluler (AT+HTTPS buka sesi TLS baru tiap kirim — boros kuota untuk
-device yang kirim sering; MQTT cuma sekali connect, lalu publish
-berkali-kali).
-
-Topic: `telemetry/<SN>` (mis. `telemetry/ESP32-01`). Payload: HEX MENTAH
-34 karakter (BUKAN dibungkus JSON) — identitas device datang dari topic,
-bukan diulang di payload. Format byte persis sama dengan field `d` di
-endpoint HTTPS di atas (lihat FIRMWARE_CONTRACT.md untuk layout byte
-lengkap) — backend decode pakai fungsi yang SAMA
-(`app/telemetry.py:decode_compact_telemetry`), jadi hasilnya identik
-apa pun jalur transportnya (termasuk alert kuota/tamper).
-
-### Setup broker MQTT (sekali saja, di VPS)
-
-**1. Password file** (autentikasi device — dipakai firmware, BUKAN
-backend; backend konek lewat listener internal anonymous):
-
-```bash
-mkdir -p mqtt/config/certs
-docker run --rm -v "$(pwd)/mqtt/config:/mosquitto/config" eclipse-mosquitto:2 \
-  mosquitto_passwd -b -c /mosquitto/config/passwd <USERNAME> <PASSWORD>
-```
-
-Satu kredensial dipakai bersama semua device di fleet (sama seperti
-`DEVICE_API_KEY` di jalur HTTPS). Generate password acak sendiri, JANGAN
-commit nilai asli ke repo (repo ini publik):
-
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(24))"
-```
-
-(Berikan `<USERNAME>` dan password hasil generate di atas ke firmware
-untuk diisi ke `MQTT_USERNAME`/`MQTT_PASSWORD` di `skripsi.ino` — simpan
-di tempat lain, bukan di repo ini.)
-
-**2. Sertifikat TLS** — self-signed cukup untuk skala thesis (device
-perlu dikonfigurasi skip verifikasi hostname/CA, bukan cert asli dari
-CA publik):
-
-```bash
-openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-  -keyout mqtt/config/certs/server.key \
-  -out mqtt/config/certs/server.crt \
-  -subj "/CN=<domain broker ini>"
-cp mqtt/config/certs/server.crt mqtt/config/certs/ca.crt
-```
-
-**3. `docker compose up -d`** untuk deploy — port 8883 (publik,
-TLS+auth, dipakai device) langsung ikut jalan bareng service lain.
-
-**Penting**: `mqtt/config/passwd` dan `mqtt/config/certs/` sengaja
-di-`.gitignore` — ini kredensial/private key asli, jangan pernah commit
-ke git.
-
-**4. ACL** — batasi tiap device ke topic miliknya sendiri. Salin
-`mqtt/config/acl` (tidak berisi rahasia, ada di repo) ke folder config broker
-di VPS, pastikan `mosquitto.conf` di VPS punya `acl_file
-/mosquitto/config/acl` di bawah `listener 8883` (lihat template
-`mqtt/config/mosquitto.conf`), lalu `docker restart kawal-gps-mqtt`. Hasilnya
-user device hanya boleh menulis `telemetry/<SN>` & `cmd-ack/<SN>` dan membaca
-`cmd/<SN>` (SN = client id); device tidak bisa mengirim perintah atau membaca
-data device lain. Listener internal 1883 (backend) sengaja tanpa ACL — tidak
-terbuka ke internet.
-
-## Perintah ke device (MQTT dua arah)
-
-Server bisa mengirim perintah ke device lewat topic `cmd/<SN>`; device
-membalas di `cmd-ack/<SN>`. Saat ini ada empat perintah:
-
-| Perintah | Isi | Efek di device |
-|---|---|---|
-| `interval` | `{"cmd":"interval","interval_s":30,"duration_min":60}` | Interval kirim jadi `interval_s` detik (2–1800) di semua mode selama `duration_min` menit (1–180), lalu kembali normal sendiri. Reboot juga membatalkannya. |
-| `reset` | `{"cmd":"reset"}` | Batalkan override interval sekarang juga. |
-| `buzzer` | `{"cmd":"buzzer","duration_s":10}` | Bunyikan buzzer `duration_s` detik (1–20), bukan kejadian tamper. Setelah device membalas `applied`, backend membuat alert `remote_alarm` ("Alarm jarak jauh ...") yang memunculkan popup + suara di app. Ditolak kalau alarm tamper asli sedang aktif. |
-| `test_tamper` | `{"cmd":"test_tamper"}` | Simulasi tamper: buzzer berbunyi seperti tamper asli dan device langsung mengirim satu titik tamper bertanda uji (flags bit4). Backend membuat alert `tamper` biasa (alarm app tetap bunyi) dengan pesan berawalan `[UJI]`. |
-
-Kirim (hanya pemegang `X-Admin-Key`):
-
-```bash
-curl -X POST https://<domain>/devices/ESP32-01/commands \
-  -H "X-Admin-Key: <ADMIN_API_KEY>" -H "Content-Type: application/json" \
-  -d '{"cmd":"interval","interval_s":30,"duration_min":60}'
-
-# cek status
-curl https://<domain>/devices/ESP32-01/commands -H "X-Admin-Key: <ADMIN_API_KEY>"
-```
-
-Atau langsung dari database (mis. DBeaver) — backend mengambil baris baru
-ini dalam ≤10 detik:
-
-```sql
-INSERT INTO device_commands (device_sn, cmd, interval_s, duration_min)
-VALUES ('ESP32-01', 'interval', 30, 60);
-
-INSERT INTO device_commands (device_sn, cmd, duration_s)
-VALUES ('ESP32-01', 'buzzer', 10);
-```
-
-Status di tabel `device_commands`: `pending` → `sent` → `applied` / `reset` /
-`rejected` (dibalas device), atau `invalid` (nilai di luar batas, tidak
-dikirim), `superseded` (digantikan perintah yang lebih baru untuk device yang
-sama), `expired` (tidak dibalas dalam 60 menit).
-
-Cara kerja pengiriman: perintah dipublish **retained** (QoS 1) dan diulang tiap
-2 menit sampai dibalas, karena lewat GSM device hanya tersambung ke broker saat
-mengirim telemetry (di mode SLEEP bisa 30 menit sekali). Begitu device
-subscribe lagi, broker langsung menyerahkan perintah terakhir; setelah dibalas
-atau kedaluwarsa, retained dihapus. Jadi perintah ke device yang sedang SLEEP
-bisa baru diterima sampai ±30 menit kemudian.
-
-Keterbatasan yang diketahui: semua device memakai satu kredensial MQTT bersama,
-jadi pemegang kredensial itu bisa memakai client id device lain (menyamar).
-Perbaikannya: username per device + ACL `%u`.
-
-## Baca data (admin/dashboard)
-
-State terkini semua device:
-
-```bash
-curl https://gps.jejakpintar.cloud/devices \
-  -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
-```
-
-State terkini satu device:
-
-```bash
-curl https://gps.jejakpintar.cloud/devices/ESP32-01 \
-  -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
-```
-
-Riwayat/histori posisi (untuk replay rute perjalanan, dan ekspor Excel di
-app). Tiap baris ikut menyimpan `dataSource` dan `powerSource` PADA SAAT
-titik itu direkam (bukan cuma nilai terkini device) — baris lama yang
-direkam sebelum kolom `power_source` ditambahkan (migrasi 0004) balik
-`powerSource: null`, itu bukan bug:
-
-```bash
-curl "https://gps.jejakpintar.cloud/telemetry/ESP32-01/history?limit=100" \
-  -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
-```
-
-Riwayat notifikasi otomatis device (mis. kuota SIM diduga habis — lihat
-catatan `dataSource` di atas):
-
-```bash
-curl "https://gps.jejakpintar.cloud/devices/ESP32-01/alerts?limit=20" \
-  -H "X-Admin-Key: <isi ADMIN_API_KEY dari .env>"
-```
-
-## Login & manajemen pengguna
-
-Menggantikan Firebase Auth + Firestore `users/{uid}` sepenuhnya — login
-pakai email/password, dapat JWT (`Authorization: Bearer <token>`, berlaku
-30 hari, tidak ada refresh-token flow).
-
-```bash
-curl -X POST https://gps.jejakpintar.cloud/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "skripsi@tester.com", "password": "<password akun>"}'
-# -> {"accessToken": "...", "tokenType": "bearer", "user": {...}}
-```
-
-Profil sendiri (siapa saja yang login):
-
-```bash
-curl https://gps.jejakpintar.cloud/users/me -H "Authorization: Bearer <token>"
-curl -X PATCH https://gps.jejakpintar.cloud/users/me \
-  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{"name": "Nama Baru"}'
-```
-
-Manajemen pengguna (admin-only, `role='admin'` pada token):
-
-```bash
-curl https://gps.jejakpintar.cloud/users -H "Authorization: Bearer <admin-token>"
-
-curl -X POST https://gps.jejakpintar.cloud/users \
-  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
-  -d '{"name": "User Baru", "email": "user@contoh.com", "password": "rahasia123", "role": "user"}'
-
-curl -X PATCH https://gps.jejakpintar.cloud/users/3 \
-  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
-  -d '{"name": "Nama Diedit", "role": "admin"}'
-
-curl -X DELETE https://gps.jejakpintar.cloud/users/3 -H "Authorization: Bearer <admin-token>"
-```
-
-`role` cuma `"admin"` atau `"user"` (bukan `"device"` lagi — device
-otentikasi pakai `DEVICE_API_KEY`, bukan akun pengguna).
-
-## Waypoints
-
-Menggantikan Firestore `devices/{sn}/waypoints` — siapa saja yang login
-boleh baca/tulis (tidak dibatasi role, sama seperti rule Firestore lama).
-
-```bash
-curl https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints \
-  -H "Authorization: Bearer <token>"
-
-curl -X POST https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints \
-  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{"name": "Tujuan", "lat": -6.2, "lng": 106.8}'
-
-curl -X DELETE https://gps.jejakpintar.cloud/devices/ESP32-01/waypoints/1 \
-  -H "Authorization: Bearer <token>"
-```
-
-## Menambah migrasi baru (kalau schema berubah nanti)
-
-```bash
-# ubah dulu app/models.py, lalu:
+# ubah app/models.py dulu, lalu:
 docker compose exec api alembic revision --autogenerate -m "deskripsi perubahan"
 docker compose exec api alembic upgrade head
 ```
 
-Commit file migrasi baru yang muncul di `alembic/versions/` ke git.
+Commit file baru di `alembic/versions/`.
 
-## Ringkasan desain
+## Keterbatasan yang diketahui
 
-- **`devices`** = state/posisi terkini per `sn`, setara satu dokumen
-  Firestore — diupdate tiap kali ada data masuk.
-- **`telemetry`** = log historis lengkap, satu baris per transmisi —
-  dipakai untuk replay rute, bukan cuma "posisi sekarang".
-- **`users`** = akun app (login), **`waypoints`** = titik tujuan per
-  device untuk fitur ETA — dua-duanya menggantikan Firestore sepenuhnya.
-- **`device_alerts`** = riwayat notifikasi otomatis (mis. kuota SIM diduga
-  habis), dibuat backend sendiri (bukan ditulis firmware langsung) saat
-  `dataSource` di `/telemetry` mengandung kata kunci peringatan — lihat
-  catatan `dataSource` di bagian "Kirim data" di atas.
-- **Tiga skema auth berbeda, jangan tertukar**: `X-API-Key` (shared,
-  device kirim data), `X-Admin-Key` (shared, dashboard/admin baca data
-  device/telemetry/alerts), dan `Authorization: Bearer <JWT>` (per-user,
-  dari `/auth/login`, dipakai endpoint `/users/*` dan `/devices/*/waypoints`).
-- **HTTPS otomatis** lewat Caddy + domain `gps.jejakpintar.cloud` —
-  tidak perlu setup certbot manual, port 8000/5432 tidak expose
-  langsung ke internet.
-
-Yang masih di luar scope starter ini: rate limiting per-device, dan
-backup terjadwal untuk volume `db_data` (mis. `pg_dump` via cron).
+- Semua alat memakai satu kredensial MQTT bersama. Pemegang kredensial itu bisa memakai client id alat lain.
+  Perbaikannya: username per alat + ACL `%u`.
+- `ADMIN_API_KEY` ikut tertanam di build app (endpoint baca device tidak memakai auth per pengguna), jadi
+  build app tidak boleh disebarkan publik.
+- Belum ada rate limiting per alat dan backup terjadwal volume database (mis. `pg_dump` via cron).

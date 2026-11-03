@@ -1,11 +1,11 @@
-/// Backend FastAPI (gps.jejakpintar.cloud) — lihat FIRMWARE_CONTRACT.md dan
-/// backend/README.md untuk detail kontrak lengkap.
+/// Backend FastAPI (mqttskripsigps.jejakpintar.cloud) — lihat FIRMWARE_CONTRACT.md
+/// dan backend/README.md untuk detail kontrak lengkap.
 ///
 /// PERINGATAN KEAMANAN: [adminApiKey] tertanam di client (bisa diekstrak dari
-/// APK/bundle web) karena backend ini belum punya skema auth per-pengguna —
-/// cuma dua API key statis (device & admin). Ini cukup untuk skripsi/demo,
-/// tapi kalau backend dipakai lebih serius, tambahkan endpoint login/token
-/// bergantung sesi di server supaya admin key tidak perlu ada di client.
+/// APK/bundle web) karena endpoint baca device (`/devices`, riwayat, alert)
+/// memakai API key statis, bukan JWT per pengguna seperti login/users/waypoint.
+/// Ini cukup untuk skripsi/demo, tapi kalau backend dipakai lebih serius,
+/// pindahkan endpoint itu ke JWT supaya admin key tidak perlu ada di client.
 class BackendConfig {
   static const String host = 'mqttskripsigps.jejakpintar.cloud';
   static const String baseUrl = 'https://$host';

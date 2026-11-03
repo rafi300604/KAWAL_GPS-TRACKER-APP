@@ -1,11 +1,54 @@
 # ESP32 ↔ Backend Contract
 
+## Ringkasan kontrak saat ini (per 2026-11-03)
+
+Bagian ini yang berlaku. Bagian-bagian di bawahnya adalah catatan riwayat perubahan (kenapa kontraknya
+jadi begini) dan dipertahankan sebagai jejak keputusan.
+
+| Komponen | Nilai |
+|---|---|
+| Backend | `https://mqttskripsigps.jejakpintar.cloud`, kode di [rafi300604/kawal-gps-backend](https://github.com/rafi300604/kawal-gps-backend) |
+| Broker MQTT | `mqttskripsigps.jejakpintar.cloud:8883`, TLS (self-signed), username/password bersama, ACL per client id |
+| Client id alat | `DEVICE_SN` (mis. `ESP32-01`) |
+| Jalur kirim | GSM/LTE lewat MQTT modem A7670E (utama), WiFi lewat MQTT ESP32 (cadangan), buffer RAM 200 titik kalau dua-duanya putus |
+| Interval | BERGERAK 30 s, SLEEPY 5 menit, SLEEP 30 menit; bisa diganti sementara lewat perintah `interval` |
+
+Topic MQTT:
+
+| Topic | Arah | Isi |
+|---|---|---|
+| `telemetry/<SN>` | alat → backend | Hex mentah 34 karakter = 17 byte biner (tabel `d` di bawah), bukan JSON |
+| `status/<SN>` | alat → backend | `online` setiap selesai connect; Last Will `offline` (keepalive GSM 30 s, WiFi 15 s) |
+| `cmd/<SN>` | backend → alat | Perintah JSON retained: `interval`, `reset`, `buzzer`, `test_tamper` |
+| `cmd-ack/<SN>` | alat → backend | Balasan: `applied` / `reset` / `rejected` |
+
+Payload 17 byte (big-endian): lat int32 /1e6 · lng int32 /1e6 · heading uint16 · speedKnots uint16 /100 ·
+epoch UTC uint32 (jam GPS) · flags uint8 (bit0 WIFI, bit1 kuota diduga habis, bit2 AKI, bit3 tamper,
+bit4 tamper uji, bit5–7 = 0). Detail per bit ada di tabel `d` di bawah.
+
+Aturan yang wajib dijaga firmware:
+- Titik dari buffer dikirim **lebih dulu** (urut dari yang paling lama), titik live **terakhir**. Setiap titik
+  menimpa "posisi terkini" di server (lihat "tidak ada `historyOnly`" di bawah).
+- Bit3 tamper hanya untuk titik live; titik dari buffer selalu bit3 = 0.
+- ACL broker harus memuat `pattern write status/%c`, kalau tidak koneksi dengan Last Will ditolak.
+
+`POST /telemetry` (HTTPS, `{"sn": "...", "d": "<34 hex>"}`, header `X-API-Key`) tetap diterima backend
+sebagai jalur alternatif. Firmware saat ini dikompilasi dengan `GSM_TRANSPORT_MQTT 1` dan
+`WIFI_TRANSPORT_MQTT 1`, jadi tidak memakainya.
+
+App membaca lewat REST dengan `X-Admin-Key` (bagian 2): `GET /devices` dan `/devices/{sn}/alerts` tiap 1 detik,
+riwayat dengan `?since=`. Daftar endpoint lengkap ada di [`backend/README.md`](backend/README.md).
+
+---
+
+## Riwayat perubahan kontrak
+
 ## ✅ STATUS PER 2026-10-03 — DOMAIN & REPO BARU, SEMUA FITUR DI BAWAH SUDAH LIVE
 
 Backend pindah dari `gps.jejakpintar.cloud` (fork `ghamiDev/Rafi.git`, co-hosting
 project BLE-scan temen) ke domain+repo baru SENDIRI: **`https://mqttskripsigps.jejakpintar.cloud`**,
-kode di `https://github.com/rafi300604/kawal-gps-backend` (private, milik Rafi
-sendiri). Alasan pindah: nambah broker MQTT di stack lama bentrok sama
+kode di `https://github.com/rafi300604/kawal-gps-backend` (repo milik Rafi
+sendiri, publik sejak 2026-10-23). Alasan pindah: nambah broker MQTT di stack lama bentrok sama
 `mosquitto.conf` punya project BLE-scan, bikin production down total — jadi
 dipisah total (repo, container/stack, domain) biar tidak saling ganggu lagi.
 
@@ -398,7 +441,7 @@ tiap container `api` start.
       dipensiunkan — dihapus dari repo setelah migrasi di atas terverifikasi
       jalan. Lihat `README.md` untuk arsitektur saat ini.
 
-## Riwayat kontrak sebelumnya (Firebase, masih aktif di firmware saat ini)
+## Riwayat kontrak sebelumnya (Firebase, sudah tidak dipakai)
 
 Sebelum migrasi ke FastAPI ini, kontraknya adalah Cloud Function
 `ingestPosition` (lihat `functions/index.js`) yang menulis ke Firestore

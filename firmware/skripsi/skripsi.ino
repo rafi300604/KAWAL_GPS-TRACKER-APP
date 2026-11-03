@@ -1,6 +1,14 @@
 /*
   =========================================================================
-  GNSS + GSM (SIM CARD) -> BACKEND FASTAPI (gps.jejakpintar.cloud)
+  GNSS + GSM (SIM CARD) -> BACKEND FASTAPI (mqttskripsigps.jejakpintar.cloud)
+  =========================================================================
+  STATUS SAAT INI (2026-11-03): telemetry dikirim lewat MQTT/TLS ke broker
+  mqttskripsigps.jejakpintar.cloud:8883 - GSM (modem A7670E) jalur utama, WiFi
+  (PubSubClient) cadangan, topic telemetry/<SN> berisi hex 17 byte (lihat
+  "PENGHEMATAN BYTE" di bawah), plus status/<SN>, cmd/<SN>, cmd-ack/<SN>.
+  Lihat GSM_TRANSPORT_MQTT / WIFI_TRANSPORT_MQTT. Catatan HTTPS dan domain
+  gps.jejakpintar.cloud di bawah adalah RIWAYAT (jalur HTTPS tetap ada di kode
+  untuk build dengan flag MQTT = 0). Kontrak lengkap: FIRMWARE_CONTRACT.md.
   =========================================================================
   A7670E dipakai untuk DUA fungsi sekaligus lewat satu chip yang sama:
     1. GNSS (GPS)  -> posisi, kecepatan, arah, DAN waktu UTC (dari satelit,

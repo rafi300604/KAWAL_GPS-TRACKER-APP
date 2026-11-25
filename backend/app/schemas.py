@@ -180,17 +180,22 @@ class DeviceAlertOut(BaseModel):
 
 
 class DeviceCommandIn(BaseModel):
-    cmd: Literal["interval", "reset", "test_tamper", "buzzer"]
+    cmd: Literal["interval", "reset", "test_tamper", "buzzer", "lte_off", "wifi_off"]
     interval_s: int | None = Field(None, ge=2, le=1800, description="Interval kirim sementara (detik)")
     duration_min: int | None = Field(None, ge=1, le=180, description="Lama berlaku (menit), lalu kembali normal")
-    duration_s: int | None = Field(None, ge=1, le=20, description="Lama bunyi buzzer (detik), cmd 'buzzer'")
+    duration_s: int | None = Field(
+        None, ge=1, le=1800,
+        description="Lama bunyi buzzer (1-20 detik, cmd 'buzzer') / lama jalur diputus (1-1800 detik, cmd 'lte_off'/'wifi_off')",
+    )
 
     @model_validator(mode="after")
     def _interval_needs_values(self):
         if self.cmd == "interval" and (self.interval_s is None or self.duration_min is None):
             raise ValueError("cmd 'interval' butuh interval_s dan duration_min")
-        if self.cmd == "buzzer" and self.duration_s is None:
-            raise ValueError("cmd 'buzzer' butuh duration_s")
+        if self.cmd == "buzzer" and (self.duration_s is None or self.duration_s > 20):
+            raise ValueError("cmd 'buzzer' butuh duration_s 1-20")
+        if self.cmd in ("lte_off", "wifi_off") and self.duration_s is None:
+            raise ValueError(f"cmd '{self.cmd}' butuh duration_s")
         return self
 
 

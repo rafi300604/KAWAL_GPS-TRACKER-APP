@@ -108,7 +108,8 @@
     byte 12-15: timestamp (uint32, UNIX epoch UTC - lihat utcEpochFromGps())
     byte 16:    flags (uint8) - bit0: dataSource (0=GSM,1=WIFI),
                 bit1: quota_warning (1=GSM diduga kuota habis, cuma valid
-                kalau bit0=1), bit2: powerSource (0=BATTERY,1=AKI),
+                kalau bit0=1), bit2: cadangan, selalu 0 (dulu powerSource -
+                dihapus 2026-11-25: alat tidak punya rangkaian deteksi sumber daya),
                 bit3: tamper (1=alat SEDANG diusik/dibongpal paksa saat
                 pengiriman ini - lihat [MPU6050 TAMPER] & tamperAlarmAktif;
                 HANYA diisi untuk titik LIVE, SELALU 0 untuk titik susulan
@@ -159,6 +160,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <EEPROM.h>
+#include <LittleFS.h>  // arsip antrean offline di flash - lihat [1b]
 #include <ArduinoJson.h>
 
 // Forward declaration: Arduino menyisipkan prototype fungsi otomatis tepat di
@@ -343,10 +345,21 @@ unsigned long lastGsmAttemptMillis = 0;
 unsigned long lastStatusReminderMillis = 0;
 
 // ==========================================================
-// [1b] BUFFER OFFLINE - simpan titik GPS di RAM saat internet mati, kirim
-// semua sekaligus begitu koneksi (SIM atau WiFi) pulih lagi.
+// [1b] BUFFER OFFLINE BERJENJANG - SRAM (cepat) + LittleFS di flash (tahan mati)
 // ==========================================================
-#define MAX_BUFFERED_POINTS  200  // ~200 titik x menit-an = cukup untuk beberapa jam offline
+// Saat tidak ada jalur data, tiap titik masuk ke DUA tempat:
+//   1. Antrean FIFO di SRAM (maks 200 titik) - cepat & bebas keausan, dipakai
+//      lebih dulu saat titik disusulkan.
+//   2. Berkas LittleFS /antrean.bin (rekaman 16 byte per titik) - tetap ada
+//      walau alat mati/reboot dan menampung titik setelah SRAM penuh.
+// Flash HANYA ditulis saat offline (bukan tiap titik), dan LittleFS menyebar
+// tulisan ke seluruh blok partisi (wear leveling), jadi batas ketahanan
+// tulis-hapus flash tidak tercapai dalam masa pakai alat. Indeks titik
+// pertama yang belum terkirim disimpan di /antrean.kpl supaya setelah reboot
+// pengiriman susulan melanjutkan dari titik yang benar (paling banyak 1 titik
+// terkirim dobel kalau daya putus persis di antara kirim dan simpan indeks).
+// Kalau LittleFS gagal dipasang, alat kembali ke perilaku lama: SRAM saja.
+#define MAX_BUFFERED_POINTS  200  // antrean SRAM (±100 menit saat BERGERAK, interval 30 s)
 
 struct BufferedPoint {
   double lat, lng;
@@ -355,7 +368,32 @@ struct BufferedPoint {
 };
 
 BufferedPoint pointBuffer[MAX_BUFFERED_POINTS];
-int bufferCount = 0;  // jumlah titik yang sedang tersimpan (buffer berhenti nerima kalau penuh)
+// Jumlah titik di SRAM. SRAM selalu memegang titik antrean PALING LAMA yang
+// belum terkirim (indeks antreanKepala .. antreanKepala + bufferCount - 1);
+// titik sesudahnya (SRAM penuh / sisa sebelum reboot) dibaca dari flash.
+int bufferCount = 0;
+
+#define ANTREAN_FILE        "/antrean.bin"
+#define ANTREAN_KEPALA_FILE "/antrean.kpl"
+#define ANTREAN_SISA_MIN_B  16384UL  // sisakan ruang partisi untuk metadata LittleFS
+
+// Format rekaman di flash = skala yang sama dengan payload telemetry 17 byte
+// (lat/lng x 1e6, kecepatan x 100), jadi tidak ada presisi yang hilang.
+struct __attribute__((packed)) RekamanAntrean {
+  int32_t  lat, lng;     // derajat x 1.000.000
+  uint16_t speedX100;    // knot x 100
+  uint16_t heading;      // derajat 0-359
+  uint32_t epochUtc;
+};
+
+bool     flashSiap = false;
+uint32_t antreanKepala = 0;  // indeks rekaman pertama di flash yang belum terkirim
+uint32_t antreanEkor = 0;    // jumlah rekaman yang pernah ditulis ke berkas sekarang
+
+// Total titik yang menunggu dikirim (SRAM + flash).
+uint32_t jumlahAntrean() {
+  return flashSiap ? antreanEkor - antreanKepala : (uint32_t)bufferCount;
+}
 
 // ==========================================================
 // [2] WIFI — DIISI LEWAT PORTAL WEB (POLA SAMA SEPERTI koding/BLE/BLE.ino):
@@ -396,6 +434,22 @@ String mdnsHostname = "";
 // Status registrasi jaringan seluler terakhir, dipakai loop() & ditampilkan
 // di dashboard portal.
 bool gsmRegistered = false;
+
+// [UJI JARINGAN] Perintah MQTT "lte_off"/"wifi_off" untuk uji failover &
+// store-and-forward (Tabel 4.2): memutus satu jalur selama duration_s lalu
+// memulihkannya SENDIRI (saat mode simpan lokal alat tidak bisa menerima
+// perintah apa pun). LTE diputus dengan AT+CFUN=4, WiFi dengan memutus STA.
+// HANYA untuk build uji - firmware harian memakai 0. Backend juga harus
+// menerima kedua perintah ini (kawal-gps-backend, app/commands.py).
+#define UJI_JARINGAN  0
+#if UJI_JARINGAN
+bool          ujiLteMati = false;
+bool          ujiWifiMati = false;
+unsigned long ujiLteMulaiMillis = 0, ujiLteDurasiMs = 0;
+unsigned long ujiWifiMulaiMillis = 0, ujiWifiDurasiMs = 0;
+uint8_t       ujiPutusTertunda = 0;  // 1 = LTE, 2 = WiFi; dijalankan SETELAH ack terkirim
+unsigned long ujiPutusTertundaMs = 0;
+#endif
 
 bool loadConfig() {
   EEPROM.get(0, config);
@@ -1505,6 +1559,9 @@ void delayLayaniPortal(unsigned long ms) {
 // selesai/gagal.
 void pastikanWiFiTersambung() {
   if (strlen(config.ssid) == 0) return;       // WiFi lokal tidak dikonfigurasi - tidak ada yang perlu dijaga
+#if UJI_JARINGAN
+  if (ujiWifiMati) return;                    // sedang diputus perintah uji "wifi_off" - lihat [UJI JARINGAN]
+#endif
   if (wifiScanBerjalan) {                     // percobaan sedang jalan - lanjutkan begitu scan selesai
     wifiSelesaikanScan();
     return;
@@ -1522,6 +1579,9 @@ void pastikanWiFiTersambung() {
 // pastikanWiFiTersambung() supaya tidak dobel-retry beruntun.
 bool wifiSiapDipakaiCadangan() {
   if (strlen(config.ssid) == 0) return false;  // WiFi lokal tidak dikonfigurasi
+#if UJI_JARINGAN
+  if (ujiWifiMati) return false;               // sedang diputus perintah uji "wifi_off"
+#endif
   if (WiFi.status() != WL_CONNECTED) {
     pastikanWiFiTersambung();
   }
@@ -1706,7 +1766,7 @@ void handleStatus() {
   doc["last_send_ago_s"] = statusSendMillis > 0 ? (long)((millis() - statusSendMillis) / 1000) : -1L;
   doc["last_data_source"] = statusLastDataSource;
   doc["mode"] = statusModeLabel;
-  doc["buffered_points"] = bufferCount;
+  doc["buffered_points"] = jumlahAntrean();
   doc["tamper_active"] = tamperAlarmAktif;
   // Pola sama seperti last_send_ago_s di atas - long di kedua cabang,
   // -1 berarti belum pernah terjadi sejak boot.
@@ -1729,45 +1789,6 @@ void handleCSS() {
     label { display: block; margin-top: 10px; font-weight: 600; }
   )";
   server.send(200, "text/css", css);
-}
-
-// Deteksi baterai vs aki per 2026-10-09 - ditrace dari skematik power
-// circuit custom Rafi (bridge rectifier D1 -> buck U2 -> 5V ke ESP32, diode-OR
-// D2/D3 di VIN+ buck antara adaptor vs baterai 2x18650). Rencana lama dari
-// Kemal (monitor VBAT, lihat histori di git) TIDAK dipakai -- D2/D3 bikin
-// VIN+ buck sama saja tegangannya dari sumber mana pun, jadi tidak ada sinyal
-// yang bisa dibaca dari situ. Sense yang benar: node RAW+ (output rectifier
-// D1, SEBELUM D3) -- node ini ~10V+ kalau adaptor terpasang (diblok D3 ke
-// VIN+ makanya tidak kebawa switching noise buck), dan collapse ke ~0V kalau
-// cuma baterai (D3 blok arus balik). Tidak overlap sama sekali dengan
-// rentang tegangan baterai (7.4-8.4V) karena baterai tidak pernah "terlihat"
-// dari node RAW+ ini.
-//
-// Hardware tambahan (voltage divider ke RAW+, SEBELUM D3):
-//   R_top 100k (RAW+ -> pin ADC) + R_bottom 10k (pin ADC -> GND) + cap
-//   filter 100nF paralel R_bottom. Rasio 11x. GPIO34 dipakai (ADC1, input-
-//   only, tidak dipakai modul lain di firmware ini -- lihat pin map GNSS/MPU/
-//   buzzer di atas) -- ADC2 SENGAJA dihindari karena tidak reliable saat
-//   WiFi aktif (firmware ini pakai WiFi fallback).
-// PERINGATAN: GPIO34 dikonfirmasi bebas dari SISI FIRMWARE saja -- belum
-// dicek ke skematik fisik board T-Call A7670E V1.0, lakukan cek kontinuitas
-// multimeter dulu sebelum solder (beberapa varian LilyGO mereservasi pin
-// ADC1 tertentu untuk fungsi onboard).
-#define PIN_VCC_SENSE 34
-
-String bacaSumberDaya() {
-  // Rata-rata beberapa sample buat redam ripple/noise dari rectifier.
-  uint32_t sumMv = 0;
-  const int N = 16;
-  for (int i = 0; i < N; i++) {
-    sumMv += analogReadMilliVolts(PIN_VCC_SENSE);  // API ter-kalibrasi, bukan analogRead() mentah
-    delayMicroseconds(200);
-  }
-  float rawPlusV = (sumMv / (float)N / 1000.0f) * 11.0f;  // rasio divider 100k:10k
-
-  // Threshold 5V: jauh di atas noise floor baterai-only (~0V), jauh di bawah
-  // RAW+ minimum saat adaptor nyala (~10V buat adaptor 12V).
-  return (rawPlusV > 5.0f) ? "AKI" : "BATTERY";
 }
 
 String bytesToHex(const uint8_t* data, size_t len) {
@@ -1815,7 +1836,6 @@ String encodeTelemetryHex(double lat, double lng, double heading, double speedKn
   uint8_t flags = 0;
   if (isWifi) flags |= 0x01;
   if (quotaWarning) flags |= 0x02;
-  if (bacaSumberDaya() != "BATTERY") flags |= 0x04;
   if (tamperAktif) flags |= 0x08;
   if (tamperAktif && tamperUjiTandaiKirim) flags |= 0x10;  // tamper_test - lihat mulaiUjiTamper()
   buf[16] = flags;
@@ -2145,6 +2165,8 @@ bool kirimKeBackendWiFiMQTT(const String& payloadHex) {
 #define CMD_DURASI_MIN_MENIT   1
 #define CMD_DURASI_MAX_MENIT   180
 #define CMD_BUZZER_MIN_S       1
+#define CMD_PUTUS_MIN_S        1      // "lte_off"/"wifi_off" - lihat [UJI JARINGAN]
+#define CMD_PUTUS_MAX_S        1800
 #define CMD_BUZZER_MAX_S       20   // sama dengan batas alarm tamper (TAMPER_ALARM_MAX_MS)
 #define CMD_JALUR_GSM          0
 #define CMD_JALUR_WIFI         1
@@ -2340,8 +2362,31 @@ void prosesPerintahMasuk(const char* json, uint8_t jalur) {
       ack["duration_s"] = durasiS;
       Serial.printf("[CMD] id=%ld BUZZER %ld detik\n", id, durasiS);
     }
+#if UJI_JARINGAN
+  } else if (strcmp(cmd, "lte_off") == 0 || strcmp(cmd, "wifi_off") == 0) {
+    bool lte = cmd[0] == 'l';
+    if (!doc["duration_s"].is<long>() ||
+        doc["duration_s"].as<long>() < CMD_PUTUS_MIN_S || doc["duration_s"].as<long>() > CMD_PUTUS_MAX_S) {
+      ack["status"] = "rejected";
+      ack["reason"] = "duration_s out of range";
+    } else if (lte ? ujiLteMati : ujiWifiMati) {
+      ack["status"] = "rejected";
+      ack["reason"] = "path already off";
+    } else {
+      long durasiS = doc["duration_s"].as<long>();
+      ujiPutusTertunda = lte ? 1 : 2;
+      ujiPutusTertundaMs = (unsigned long)durasiS * 1000UL;
+      ack["status"] = "applied";
+      ack["duration_s"] = durasiS;
+      Serial.printf("[CMD] id=%ld %s %ld detik (diputus setelah ack terkirim)\n", id, lte ? "LTE OFF" : "WIFI OFF", durasiS);
+    }
+#endif
   } else if (strcmp(cmd, "reset") == 0) {
     if (buzzerJarakJauhAktif) hentikanBuzzerJarakJauh("dihentikan perintah reset");
+#if UJI_JARINGAN
+    if (ujiLteMati) ujiLteDurasiMs = 0;    // dipulihkan [MONITOR JALUR] di putaran berikutnya
+    if (ujiWifiMati) ujiWifiDurasiMs = 0;
+#endif
     intervalOverrideAktif = false;
     ack["status"] = "reset";
     Serial.printf("[CMD] id=%ld RESET: override interval dihapus, kembali ke interval normal.\n", id);
@@ -2359,6 +2404,9 @@ void prosesPerintahMasuk(const char* json, uint8_t jalur) {
   cmdRiwayatBerikut = (cmdRiwayatBerikut + 1) % CMD_RIWAYAT_N;
   if (cmdRiwayatJumlah < CMD_RIWAYAT_N) cmdRiwayatJumlah++;
   kirimAckPerintah(jalur, ackJson);
+#if UJI_JARINGAN
+  jalankanPutusUjiTertunda();  // ack harus keluar dulu - jalurnya mungkin yang akan diputus
+#endif
 }
 
 // Dipanggil berulang dari delayLayaniPortal() (loop() menghabiskan sebagian
@@ -2539,7 +2587,66 @@ const char* namaJalur(uint8_t j) {
   return j == JALUR_GSM ? "GSM" : j == JALUR_WIFI ? "WIFI" : "SIMPAN-LOKAL";
 }
 
+#if UJI_JARINGAN
+void jalankanPutusUjiTertunda() {
+  if (ujiPutusTertunda == 0) return;
+  if (ujiPutusTertunda == 1) {
+    // AT+CFUN=4 baru membalas OK setelah modem selesai detach (bisa > 30 s),
+    // jadi titik "koneksi terputus" (t0 waktu failover) = saat modem sendiri
+    // melapor TIDAK terdaftar lagi - bukan saat perintah dikirim. Peralihannya
+    // tetap dideteksi pantauJalurData().
+    unsigned long tPerintah = millis();
+    tandaiGsmRfAktif();
+    modem.sendAT("+CFUN=4");  // radio seluler mati (GNSS tetap jalan) = setara blank spot
+    modem.waitResponse(1000UL);
+    unsigned long t0 = 0;
+    int st = -1;
+    while (millis() - tPerintah < 30000UL) {
+      st = modem.getRegistrationStatus();
+      if (st == REG_UNREGISTERED || st == REG_SEARCHING || st == REG_DENIED) {
+        t0 = millis();
+        break;
+      }
+      delay(100);
+    }
+    bool ok = t0 != 0;
+    if (!ok) t0 = millis();
+    ujiLteMati = true;
+    ujiLteMulaiMillis = t0;
+    ujiLteDurasiMs = ujiPutusTertundaMs;
+    Serial.printf("[UJI] %lu LTE DIPUTUS (%s, status registrasi %d, %lu ms setelah AT+CFUN=4 pada %lu) selama %lu s\n",
+                  t0, ok ? "radio mati" : "TIDAK TERKONFIRMASI", st, t0 - tPerintah, tPerintah, ujiPutusTertundaMs / 1000UL);
+  } else {
+    unsigned long t0 = millis();
+    ujiWifiMati = true;
+    ujiWifiMulaiMillis = t0;
+    ujiWifiDurasiMs = ujiPutusTertundaMs;
+    WiFi.disconnect(false, false);  // STA saja - Access Point portal tetap hidup
+    Serial.printf("[UJI] %lu WIFI DIPUTUS (STA disconnect, sambung ulang diblokir) selama %lu s\n", t0, ujiPutusTertundaMs / 1000UL);
+  }
+  ujiPutusTertunda = 0;
+}
+
+void layaniPulihUji() {
+  if (ujiLteMati && millis() - ujiLteMulaiMillis >= ujiLteDurasiMs) {
+    modem.sendAT("+CFUN=1");
+    bool ok = modem.waitResponse(10000UL) == 1;
+    ujiLteMati = false;
+    Serial.printf("[UJI] %lu LTE DIPULIHKAN (AT+CFUN=1 %s)\n", millis(), ok ? "OK" : "GAGAL");
+  }
+  if (ujiWifiMati && millis() - ujiWifiMulaiMillis >= ujiWifiDurasiMs) {
+    ujiWifiMati = false;
+    lastWifiAttemptMillis = millis() - WIFI_RECONNECT_COOLDOWN_MS;  // sambung ulang sekarang, tanpa cooldown
+    Serial.printf("[UJI] %lu WIFI DIPULIHKAN (sambung ulang dimulai)\n", millis());
+    pastikanWiFiTersambung();
+  }
+}
+#endif
+
 void pantauJalurData() {
+#if UJI_JARINGAN
+  layaniPulihUji();
+#endif
   if (millis() - jalurCekTerakhirMillis < JALUR_CEK_MS) return;
   jalurCekTerakhirMillis = millis();
 
@@ -2557,6 +2664,9 @@ void pantauJalurData() {
 
   static bool wifiSebelumnya = false;
   bool wifiAda = strlen(config.ssid) > 0 && WiFi.status() == WL_CONNECTED;
+#if UJI_JARINGAN
+  if (ujiWifiMati) wifiAda = false;
+#endif
 #if WIFI_TRANSPORT_MQTT
   if (wifiSebelumnya && !wifiAda && mqttWifiConfigured) mqttWifiTlsClient.stop();  // socket TLS lama sudah mati
 #endif
@@ -2579,8 +2689,8 @@ void pantauJalurData() {
     Serial.printf("[FAILOVER] %lu jalur WIFI %s\n", millis(), ok ? "SIAP (MQTT WiFi tersambung)" : "BELUM SIAP (MQTT WiFi gagal)");
 #endif
   } else if (baru == JALUR_SIMPAN) {
-    Serial.printf("[FAILOVER] %lu MODE SIMPAN LOKAL aktif - titik berikutnya langsung ke buffer (%d/%d terisi)\n",
-                  millis(), bufferCount, MAX_BUFFERED_POINTS);
+    Serial.printf("[FAILOVER] %lu MODE SIMPAN LOKAL aktif - titik berikutnya langsung ke buffer (%lu titik menunggu)\n",
+                  millis(), (unsigned long)jumlahAntrean());
   }
 }
 
@@ -2730,48 +2840,144 @@ bool kirimSatuRiwayatPosisi(const BufferedPoint &p) {
   return kirimKeBackend(p.lat, p.lng, p.speedKnots, p.heading, p.epochUtc, /*tamperAktif=*/false);
 }
 
-// Simpan satu titik ke buffer RAM (dipanggil kalau pengiriman langsung gagal
-// terus setelah KIRIM_MAX_RETRY kali percobaan). Buffer berhenti menerima
-// titik baru kalau sudah penuh - data GPS tetap dibaca terus, cuma tidak ada
-// tempat lagi untuk menyimpannya sampai buffer dikosongkan lewat flush.
-void simpanKeBuffer(const GpsData &d) {
-  if (bufferCount >= MAX_BUFFERED_POINTS) {
-    Serial.println("[Buffer] Penuh! Titik ini tidak tersimpan (buffer sudah maksimal).");
+// Pasang LittleFS dan baca sisa antrean dari sebelum reboot. Dipanggil sekali
+// di setup(). Gagal = flashSiap tetap false (antrean SRAM saja).
+void mulaiArsipFlash() {
+  if (!LittleFS.begin(true)) {  // true = format partisi kalau belum pernah dipakai
+    Serial.println("[Antrean] LittleFS GAGAL dipasang - buffer offline memakai SRAM saja.");
     return;
   }
-  BufferedPoint &p = pointBuffer[bufferCount];
+  flashSiap = true;
+  antreanKepala = 0;
+  antreanEkor = 0;
+  File f = LittleFS.open(ANTREAN_FILE, "r");
+  if (f) {
+    antreanEkor = f.size() / sizeof(RekamanAntrean);  // rekaman terakhir yang terpotong (daya putus) diabaikan
+    f.close();
+  }
+  File k = LittleFS.open(ANTREAN_KEPALA_FILE, "r");
+  if (k) {
+    if (k.read((uint8_t *)&antreanKepala, sizeof(antreanKepala)) != sizeof(antreanKepala)) antreanKepala = 0;
+    k.close();
+  }
+  if (antreanKepala >= antreanEkor) kosongkanArsipFlash();
+  Serial.printf("[Antrean] LittleFS siap: partisi %lu KB, terpakai %lu KB; %lu titik dari sebelum reboot menunggu dikirim.\n",
+                (unsigned long)(LittleFS.totalBytes() / 1024), (unsigned long)(LittleFS.usedBytes() / 1024),
+                (unsigned long)jumlahAntrean());
+}
+
+void kosongkanArsipFlash() {
+  LittleFS.remove(ANTREAN_FILE);
+  LittleFS.remove(ANTREAN_KEPALA_FILE);
+  antreanKepala = 0;
+  antreanEkor = 0;
+}
+
+void simpanKepalaAntrean() {
+  File k = LittleFS.open(ANTREAN_KEPALA_FILE, "w");
+  if (!k) return;
+  k.write((const uint8_t *)&antreanKepala, sizeof(antreanKepala));
+  k.close();
+}
+
+bool bacaRekamanFlash(uint32_t indeks, BufferedPoint &p) {
+  File f = LittleFS.open(ANTREAN_FILE, "r");
+  if (!f) return false;
+  RekamanAntrean r;
+  bool ok = f.seek(indeks * sizeof(RekamanAntrean)) && f.read((uint8_t *)&r, sizeof(r)) == sizeof(r);
+  f.close();
+  if (!ok) return false;
+  p.lat = r.lat / 1000000.0;
+  p.lng = r.lng / 1000000.0;
+  p.speedKnots = r.speedX100 / 100.0f;
+  p.heading = r.heading;
+  p.epochUtc = r.epochUtc;
+  return true;
+}
+
+bool tulisRekamanFlash(const BufferedPoint &p) {
+  if (LittleFS.totalBytes() - LittleFS.usedBytes() < ANTREAN_SISA_MIN_B) return false;
+  RekamanAntrean r;
+  r.lat = (int32_t)lround(p.lat * 1000000.0);
+  r.lng = (int32_t)lround(p.lng * 1000000.0);
+  r.speedX100 = (uint16_t)lroundf(p.speedKnots * 100.0f);
+  r.heading = (uint16_t)lroundf(p.heading);
+  r.epochUtc = p.epochUtc;
+  File f = LittleFS.open(ANTREAN_FILE, "a");
+  if (!f) return false;
+  bool ok = f.write((const uint8_t *)&r, sizeof(r)) == sizeof(r);
+  f.close();
+  return ok;
+}
+
+// Simpan satu titik offline ke antrean (SRAM + flash). Dipanggil kalau tidak
+// ada jalur data atau pengiriman tetap gagal setelah KIRIM_MAX_RETRY kali.
+void simpanKeBuffer(const GpsData &d) {
+  BufferedPoint p;
   p.lat = d.latitude;
   p.lng = d.longitude;
   p.speedKnots = d.speedKnots;
   p.heading = d.courseValid ? d.course : 0.0f;
   p.epochUtc = utcEpochFromGps(d);
-  bufferCount++;
-  Serial.printf("[Buffer] Titik disimpan offline (%d/%d tersimpan).\n", bufferCount, MAX_BUFFERED_POINTS);
-}
 
-// Kirim semua titik yang sempat tersimpan saat offline, dipanggil begitu ada
-// pengiriman yang berhasil lagi (tandanya koneksi sudah pulih).
-void flushBufferedPoints() {
-  if (bufferCount == 0) return;
-  Serial.printf("[Buffer] Mengirim %d titik yang tersimpan saat offline...\n", bufferCount);
-
-  int terkirim = 0;
-  for (int i = 0; i < bufferCount; i++) {
-    server.handleClient();  // tetap layani portal di antara kiriman susulan
-    if (kirimSatuRiwayatPosisi(pointBuffer[i])) {
-      terkirim++;
-    } else {
-      Serial.printf("[Buffer] Gagal kirim titik ke-%d, dihentikan - sisanya dicoba lagi nanti.\n", i + 1);
-      // Geser sisa titik yang belum terkirim ke depan buffer, buang yang sudah sukses.
-      int sisa = bufferCount - i;
-      memmove(&pointBuffer[0], &pointBuffer[i], sisa * sizeof(BufferedPoint));
-      bufferCount = sisa;
-      Serial.printf("[Buffer] %d titik terkirim, %d titik masih tersisa di buffer.\n", terkirim, bufferCount);
+  if (flashSiap) {
+    if (!tulisRekamanFlash(p)) {
+      Serial.println("[Buffer] Arsip flash penuh / gagal ditulis - titik ini tidak tersimpan.");
       return;
     }
+    // SRAM hanya menampung titik yang bersambung dengan isinya (titik paling lama dulu).
+    if (bufferCount < MAX_BUFFERED_POINTS && antreanKepala + bufferCount == antreanEkor) {
+      pointBuffer[bufferCount++] = p;
+    }
+    antreanEkor++;
+  } else {
+    if (bufferCount >= MAX_BUFFERED_POINTS) {
+      Serial.println("[Buffer] Penuh! Titik ini tidak tersimpan (buffer sudah maksimal).");
+      return;
+    }
+    pointBuffer[bufferCount++] = p;
   }
-  Serial.printf("[Buffer] Semua %d titik berhasil terkirim.\n", terkirim);
-  bufferCount = 0;
+  Serial.printf("[Buffer] Titik disimpan offline (SRAM %d/%d, total %lu titik menunggu%s) epoch=%lu.\n",
+                bufferCount, MAX_BUFFERED_POINTS, (unsigned long)jumlahAntrean(),
+                flashSiap ? ", tersimpan juga di flash" : "", (unsigned long)p.epochUtc);
+}
+
+// Kirim semua titik yang menunggu (paling lama dulu), dipanggil begitu ada
+// jalur data lagi. Titik diambil dari SRAM selama ada, sisanya dari flash.
+void flushBufferedPoints() {
+  uint32_t total = jumlahAntrean();
+  if (total == 0) return;
+  Serial.printf("[Buffer] Mengirim %lu titik yang tersimpan saat offline...\n", (unsigned long)total);
+
+  uint32_t terkirim = 0;
+  while (jumlahAntrean() > 0) {
+    server.handleClient();  // tetap layani portal di antara kiriman susulan
+    BufferedPoint p;
+    bool dariSram = bufferCount > 0;
+    if (dariSram) {
+      p = pointBuffer[0];
+    } else if (!bacaRekamanFlash(antreanKepala, p)) {
+      Serial.printf("[Buffer] Gagal membaca titik ke-%lu dari flash, dihentikan.\n", (unsigned long)(terkirim + 1));
+      return;
+    }
+    if (!kirimSatuRiwayatPosisi(p)) {
+      Serial.printf("[Buffer] Gagal kirim titik ke-%lu, dihentikan - sisanya dicoba lagi nanti.\n", (unsigned long)(terkirim + 1));
+      Serial.printf("[Buffer] %lu titik terkirim, %lu titik masih tersisa di buffer.\n",
+                    (unsigned long)terkirim, (unsigned long)jumlahAntrean());
+      return;
+    }
+    terkirim++;
+    if (dariSram) {
+      bufferCount--;
+      memmove(&pointBuffer[0], &pointBuffer[1], bufferCount * sizeof(BufferedPoint));
+    }
+    if (flashSiap) {
+      antreanKepala++;
+      simpanKepalaAntrean();
+    }
+  }
+  if (flashSiap) kosongkanArsipFlash();
+  Serial.printf("[Buffer] Semua %lu titik berhasil terkirim.\n", (unsigned long)terkirim);
 }
 
 // Coba kirim posisi terkini, kalau gagal coba sambungkan ulang SIM
@@ -2852,6 +3058,7 @@ void setup() {
   if (!loadConfig()) {
     Serial.println("Konfigurasi belum ada / tidak valid. Memakai default.");
   }
+  mulaiArsipFlash();  // antrean offline di flash - lihat [1b]
 
   // ---- Nyalakan modem A7670E (GNSS + data seluler) ----
   SerialAT.begin(UART_BAUD, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);

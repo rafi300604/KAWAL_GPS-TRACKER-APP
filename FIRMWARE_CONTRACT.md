@@ -10,7 +10,7 @@ jadi begini) dan dipertahankan sebagai jejak keputusan.
 | Backend | `https://mqttskripsigps.jejakpintar.cloud`, kode di [rafi300604/kawal-gps-backend](https://github.com/rafi300604/kawal-gps-backend) |
 | Broker MQTT | `mqttskripsigps.jejakpintar.cloud:8883`, TLS (self-signed), username/password bersama, ACL per client id |
 | Client id alat | `DEVICE_SN` (mis. `ESP32-01`) |
-| Jalur kirim | GSM/LTE lewat MQTT modem A7670E (utama), WiFi lewat MQTT ESP32 (cadangan), buffer RAM 200 titik kalau dua-duanya putus |
+| Jalur kirim | GSM/LTE lewat MQTT modem A7670E (utama), WiFi lewat MQTT ESP32 (cadangan); kalau dua-duanya putus titik masuk antrean SRAM 200 titik + berkas LittleFS di flash (selamat saat reboot) |
 | Interval | BERGERAK 30 s, SLEEPY 5 menit, SLEEP 30 menit; bisa diganti sementara lewat perintah `interval` |
 
 Topic MQTT:
@@ -19,11 +19,11 @@ Topic MQTT:
 |---|---|---|
 | `telemetry/<SN>` | alat → backend | Hex mentah 34 karakter = 17 byte biner (tabel `d` di bawah), bukan JSON |
 | `status/<SN>` | alat → backend | `online` setiap selesai connect; Last Will `offline` (keepalive GSM 30 s, WiFi 15 s) |
-| `cmd/<SN>` | backend → alat | Perintah JSON retained: `interval`, `reset`, `buzzer`, `test_tamper` |
+| `cmd/<SN>` | backend → alat | Perintah JSON retained: `interval`, `reset`, `buzzer`, `test_tamper` (+ `lte_off`/`wifi_off` hanya untuk build uji `UJI_JARINGAN 1`) |
 | `cmd-ack/<SN>` | alat → backend | Balasan: `applied` / `reset` / `rejected` |
 
 Payload 17 byte (big-endian): lat int32 /1e6 · lng int32 /1e6 · heading uint16 · speedKnots uint16 /100 ·
-epoch UTC uint32 (jam GPS) · flags uint8 (bit0 WIFI, bit1 kuota diduga habis, bit2 AKI, bit3 tamper,
+epoch UTC uint32 (jam GPS) · flags uint8 (bit0 WIFI, bit1 kuota diduga habis, bit2 cadangan (dulu sumber daya, lihat di bawah), bit3 tamper,
 bit4 tamper uji, bit5–7 = 0). Detail per bit ada di tabel `d` di bawah.
 
 Aturan yang wajib dijaga firmware:
@@ -112,7 +112,7 @@ Field `d` = 17 byte biner (big-endian) di-hex-encode jadi 34 karakter:
 | 8-9 | heading | uint16 | derajat 0-359 langsung |
 | 10-11 | speedKnots | uint16 | nilai asli = uint16 / 100 |
 | 12-15 | timestamp | uint32 | UNIX epoch UTC (detik) |
-| 16 | flags | uint8 | bit0: dataSource (0=GSM,1=WIFI); bit1: quota_warning (1=kuota diduga habis, cuma valid kalau bit0=1); bit2: powerSource (0=BATTERY,1=AKI); bit3: tamper (1=alarm tamper aktif SAAT titik ini, HANYA untuk titik live -- lihat bagian tamper di bawah); bit4: tamper_test (1=titik tamper hasil perintah server `test_tamper`, simulasi -- cuma valid bersama bit3=1; backend memberi alert-nya awalan `[UJI]`); bit5-7: cadangan (harus 0) |
+| 16 | flags | uint8 | bit0: dataSource (0=GSM,1=WIFI); bit1: quota_warning (1=kuota diduga habis, cuma valid kalau bit0=1); bit2: cadangan, selalu 0 (dulu powerSource 0=BATTERY/1=AKI; dihapus 2026-11-25, backend mengabaikannya); bit3: tamper (1=alarm tamper aktif SAAT titik ini, HANYA untuk titik live -- lihat bagian tamper di bawah); bit4: tamper_test (1=titik tamper hasil perintah server `test_tamper`, simulasi -- cuma valid bersama bit3=1; backend memberi alert-nya awalan `[UJI]`); bit5-7: cadangan (harus 0) |
 
 **Kenapa BUKAN hex-dari-JSON-utuh, dan bukan raw binary `application/octet-stream`
 juga**: dianalisis dari referensi `vms_u30gt_iridium_final.ino` (tracker
@@ -265,6 +265,11 @@ Field wajib: `sn`, `lat`, `lng`, `timestamp`, `dataSource`. Field opsional:
 `powerSource`, `status` (biasanya `"active"`, khusus jalur WiFi kalau perlu).
 `timestamp` dari jam satelit GPS (UTC ISO-8601), bukan NTP — sama seperti
 kontrak lama.
+
+**[DIHAPUS 2026-11-25] Info sumber daya (`powerSource`) dihapus dari firmware, backend, dan app** karena alat
+tidak punya rangkaian deteksi sumber daya (adaptor vs baterai). Firmware tidak lagi mengisi bit2, backend tidak
+lagi menyimpan `power_source` untuk data baru (kolom lama tetap ada untuk data historis), dan app tidak lagi
+menampilkan baris/kolom "Sumber Daya". Catatan di bawah ini riwayat.
 
 **`powerSource` TIDAK PERNAH terkirim di praktiknya (ditemukan 2026-09-14)**
 — dicek langsung ke database: dari 324 baris riwayat `ESP32-01` (mulai

@@ -182,7 +182,7 @@ async def create_device_command(
         cmd=payload.cmd,
         interval_s=payload.interval_s if payload.cmd == "interval" else None,
         duration_min=payload.duration_min if payload.cmd == "interval" else None,
-        duration_s=payload.duration_s if payload.cmd == "buzzer" else None,
+        duration_s=payload.duration_s if payload.cmd in ("buzzer", "lte_off", "wifi_off") else None,
         status="pending",
     )
     db.add(command)

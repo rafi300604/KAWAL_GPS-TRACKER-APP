@@ -69,7 +69,7 @@ Produksi: `https://mqttskripsigps.jejakpintar.cloud` (API) dan `mqttskripsigps.j
 
 | Tabel | Isi |
 |---|---|
-| `devices` | State terkini per `sn`: posisi, kecepatan, arah, sumber data/daya, `tamper`, `online` |
+| `devices` | State terkini per `sn`: posisi, kecepatan, arah, sumber data, `tamper`, `online` |
 | `telemetry` | Riwayat lengkap, satu baris per titik (dipakai replay rute dan ekspor Excel) |
 | `device_alerts` | Notifikasi: `tamper`, `low_quota`, `remote_alarm`, `offline`, `online` |
 | `device_commands` | Perintah ke alat dan statusnya |
@@ -146,7 +146,7 @@ Device **tidak perlu registrasi**: baris `devices` dibuat/diupdate otomatis berd
 | 8–9 | heading | uint16 | derajat 0–359 |
 | 10–11 | speedKnots | uint16 | nilai asli = uint16 / 100 |
 | 12–15 | timestamp | uint32 | UNIX epoch UTC (detik), dari jam GPS |
-| 16 | flags | uint8 | bit0 dataSource (0=GSM, 1=WIFI); bit1 kuota diduga habis; bit2 powerSource (0=BATTERY, 1=AKI); bit3 tamper; bit4 tamper uji (`test_tamper`); bit5–7 cadangan |
+| 16 | flags | uint8 | bit0 dataSource (0=GSM, 1=WIFI); bit1 kuota diduga habis; bit2 cadangan (dulu sumber daya; diabaikan sejak 2026-11-25); bit3 tamper; bit4 tamper uji (`test_tamper`); bit5–7 cadangan |
 
 Contoh `ffa16540065da380002d03526aa91aa400` → lat −6,2; lng 106,8; heading 45°; 8,5 knot;
 2026-09-15T10:15:00Z; flags 0.

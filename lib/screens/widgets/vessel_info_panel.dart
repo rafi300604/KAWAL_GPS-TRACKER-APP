@@ -125,7 +125,6 @@ class _VesselInfoPanelState extends State<VesselInfoPanel> {
                 '${(v.speedKnots * 1.852).toStringAsFixed(1)} km/jam'),
             _infoRow(context, Icons.navigation_outlined, 'Arah',
                 '${v.heading.toStringAsFixed(0)}° (${formatHeadingCompass(v.heading)})'),
-            _infoRow(context, Icons.bolt_outlined, 'Sumber Daya', v.powerSource),
             // dataSource TIDAK SELALU cuma "GSM"/"WIFI" polos - firmware bisa
             // kirim string deskriptif seperti "WIFI (GSM: kuota diduga
             // habis)" (lihat DeviceVessel.hasQuotaWarning), jadi tampilkan

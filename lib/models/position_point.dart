@@ -7,7 +7,6 @@ class PositionPoint {
   final double speedKnots;
   final double heading;
   final DateTime timestamp;
-  final String? powerSource;
   final String? dataSource;
   final bool tamper;
 
@@ -18,7 +17,6 @@ class PositionPoint {
     required this.speedKnots,
     required this.heading,
     required this.timestamp,
-    this.powerSource,
     this.dataSource,
     this.tamper = false,
   });
@@ -35,7 +33,6 @@ class PositionPoint {
       timestamp: json['timestamp'] != null
           ? parseBackendUtc(json['timestamp'] as String)
           : DateTime.now(),
-      powerSource: json['powerSource'] as String?,
       dataSource: json['dataSource'] as String?,
       tamper: json['tamper'] as bool? ?? false,
     );

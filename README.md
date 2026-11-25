@@ -27,8 +27,8 @@ its own repo, [rafi300604/kawal-gps-backend](https://github.com/rafi300604/kawal
 ```
 
 - **Device → backend over MQTT.** Each point is a 17-byte binary record sent as 34 hex characters to
-  `telemetry/<SN>`: position, speed, heading, GPS time, and flags (GSM/WiFi, battery/vehicle power,
-  low-quota warning, tamper). One TLS session carries many publishes, which saves cellular data compared
+  `telemetry/<SN>`: position, speed, heading, GPS time, and flags (GSM/WiFi, low-quota warning,
+  tamper). One TLS session carries many publishes, which saves cellular data compared
   with one HTTPS request per point.
 - **Two-way commands.** The backend can send `interval`, `reset`, `buzzer`, and `test_tamper` to
   `cmd/<SN>`; the device answers on `cmd-ack/<SN>`.
@@ -58,8 +58,6 @@ Full contract: [`FIRMWARE_CONTRACT.md`](FIRMWARE_CONTRACT.md). Backend details:
   returns, before the live point.
 - **Tamper.** An MPU6050 (21 Hz low-pass) detects forced handling while the vehicle is not moving. The
   buzzer sounds and a tamper point is sent at once.
-- **Power source.** A divider on the vehicle-power node tells vehicle power (AKI) from the 2×18650 backup
-  battery.
 - **Config portal.** An always-on access point serves a web portal for the device name, WiFi, hostname, and APN settings.
 
 ## Features
@@ -71,7 +69,7 @@ Full contract: [`FIRMWARE_CONTRACT.md`](FIRMWARE_CONTRACT.md). Backend details:
 - **Waypoints.** Add one by tapping the map, typing coordinates, or searching a place name (Nominatim). ETA
   follows the road route (OSRM), not a straight line.
 - **Tracking history.** Pick 1–30 days. The route auto-plays from start to finish with a moving marker and
-  can be replayed. Excel export includes data source, power source, and tamper per point.
+  can be replayed. Excel export includes data source and tamper per point.
 - **Accounts.** Login with email/password (JWT). Admins can list, search, create, and edit users.
 - **Interface.** Dark/light theme (persisted). Responsive layout: permanent sidebar on wide screens, drawer
   on narrow ones, with the same features on web, Android, and iOS.

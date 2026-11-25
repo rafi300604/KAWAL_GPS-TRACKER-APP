@@ -184,7 +184,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         deviceName: vessel.name,
         deviceSn: vessel.sn,
         days: 0,
-        devicePowerSource: vessel.powerSource,
         sharePositionOrigin: origin,
       );
     } catch (e) {

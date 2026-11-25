@@ -32,7 +32,10 @@ QUOTA_ALERT_COOLDOWN = timedelta(hours=12)
 COMPACT_TELEMETRY_STRUCT = struct.Struct(">iiHHIB")
 FLAG_WIFI = 0b0001
 FLAG_QUOTA_WARNING = 0b0010
-FLAG_POWER_AKI = 0b0100
+# bit2 dulu powerSource (0=BATTERY, 1=AKI). Dihapus 2026-11-25: alat tidak punya
+# rangkaian deteksi sumber daya, jadi nilainya tidak bermakna. Bit ini diabaikan
+# (masih diterima supaya paket firmware lama tidak ditolak) dan power_source
+# tidak lagi diisi.
 FLAG_TAMPER = 0b1000
 # Titik tamper hasil perintah server `test_tamper` (simulasi), bukan guncangan
 # asli -- alert-nya diberi tanda [UJI]. Cuma valid bersama bit3.
@@ -76,7 +79,7 @@ def decode_compact_telemetry(hex_payload: str) -> dict:
         "speed_knots": speed_raw / 100,
         "timestamp": datetime.fromtimestamp(ts_raw, tz=timezone.utc),
         "data_source": data_source,
-        "power_source": "AKI" if flags & FLAG_POWER_AKI else "BATTERY",
+        "power_source": None,
         "tamper": bool(flags & FLAG_TAMPER),
         "tamper_test": bool(flags & FLAG_TAMPER_TEST),
     }

@@ -9,12 +9,15 @@ Ringkasan perilaku:
 
 - **Jalur kirim.** GSM/LTE lewat MQTT modem A7670E adalah jalur utama, WiFi lewat MQTT ESP32
   (PubSubClient) cadangan. Keduanya TLS ke `mqttskripsigps.jejakpintar.cloud:8883`. Kalau dua-duanya putus,
-  maksimal 200 titik disimpan di RAM lalu disusulkan (yang paling lama dulu) begitu jalur pulih.
+  titik disimpan di antrean berjenjang: SRAM (200 titik) sekaligus berkas LittleFS di flash (16 byte per titik,
+  partisi 1408 KB), jadi antrean selamat walau alat reboot/mati. Begitu jalur pulih titik disusulkan dari yang paling
+  lama, lalu baru titik live. Diuji 25 Nov 2026 (Tabel 4.2): 205/205 titik tersusul, reboot saat offline 50/50.
+- **Build uji.** `#define UJI_JARINGAN 1` mengaktifkan perintah MQTT `lte_off` / `wifi_off` (memutus jalur selama
+  `duration_s`, dipakai uji Tabel 4.2). Firmware harian memakai 0.
 - **Interval.** BERGERAK 30 s (kecepatan GPS > 3,5 knot selama 15 s), SLEEPY 5 menit (baru berhenti),
   SLEEP 30 menit (diam 15 menit).
 - **Tamper.** MPU6050 (DLPF 21 Hz) hanya dievaluasi saat tidak BERGERAK. Alarm menyala kalau deviasi dan
   rotasi melewati ambang selama ≥ 800 ms; buzzer bunyi dan titik tamper langsung dikirim.
-- **Sumber daya.** Divider 100k/10k di node RAW+ (GPIO34) membedakan aki/adaptor dari baterai 2×18650.
 - **Portal.** Access point selalu aktif; portal web untuk nama alat, WiFi, hostname, dan APN.
 
 Status koneksi: setiap selesai connect alat publish `online` ke `status/<SN>` dan memasang Last Will `offline`

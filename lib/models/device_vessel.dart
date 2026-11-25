@@ -8,7 +8,6 @@ class DeviceVessel {
   final double heading;
   final double speedKnots;
   final String status; // 'active' | 'inactive' | 'unknown'
-  final String powerSource;
   final String dataSource;
   final String? wifiSsid;
   final String? ipv4;
@@ -49,7 +48,6 @@ class DeviceVessel {
     required this.heading,
     required this.speedKnots,
     required this.status,
-    required this.powerSource,
     required this.dataSource,
     this.wifiSsid,
     this.ipv4,
@@ -79,7 +77,6 @@ class DeviceVessel {
           heading == other.heading &&
           speedKnots == other.speedKnots &&
           status == other.status &&
-          powerSource == other.powerSource &&
           dataSource == other.dataSource &&
           wifiSsid == other.wifiSsid &&
           ipv4 == other.ipv4 &&
@@ -88,8 +85,8 @@ class DeviceVessel {
           online == other.online;
 
   @override
-  int get hashCode => Object.hash(sn, name, lat, lng, heading, speedKnots, status, powerSource,
-      dataSource, wifiSsid, ipv4, lastTransmittedAt, tamper, online);
+  int get hashCode => Object.hash(sn, name, lat, lng, heading, speedKnots, status, dataSource,
+      wifiSsid, ipv4, lastTransmittedAt, tamper, online);
 
   factory DeviceVessel.fromJson(Map<String, dynamic> json) {
     return DeviceVessel(
@@ -100,7 +97,6 @@ class DeviceVessel {
       heading: (json['heading'] as num?)?.toDouble() ?? 0,
       speedKnots: (json['speedKnots'] as num?)?.toDouble() ?? 0,
       status: json['status'] as String? ?? 'unknown',
-      powerSource: json['powerSource'] as String? ?? '',
       dataSource: json['dataSource'] as String? ?? '',
       wifiSsid: json['wifiSsid'] as String?,
       ipv4: json['ipv4'] as String?,
